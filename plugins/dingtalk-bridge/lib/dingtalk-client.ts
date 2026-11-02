@@ -49,13 +49,154 @@ export class DingTalkClient {
 
     /* ---------------- webhook 回复 ---------------- */
 
-    /** 通过 sessionWebhook 回复（最常用，无需 token） */
+    /**
+     * 剥掉模型擅自复述的系统提示片段。
+     *
+     * 现象：部分模型会把系统提示里的格式规则当成正文输出，
+     * 例如末尾多出 "## Response Guidelines\n- Be clear and concise..."。
+     * 这里做兜底清洗，避免污染真正的回答。
+     */
+    static stripLeakedPrompt(text: string): string {
+        /*
+         * 模型可能用多种写法复述提示词标题：
+         *   ## Response Guidelines
+         *   **Response Guidelines**
+         *   Response Guidelines:
+         *   ### 回复要求
+         * 统一按「去掉修饰符后的裸标题」匹配，避免漏网。
+         */
+        const LEAK_TITLES = [
+            'response guidelines',
+            'response format',
+            'response formatting',
+            'guidelines',
+            'formatting guidelines',
+            'output format',
+            'capability notes',
+            'capabilities',
+            '回复要求',
+            '格式要求',
+            '输出格式',
+            '能力说明',
+        ];
+
+        const normalizeTitle = (line: string): string =>
+            line
+                /* 去掉标题井号、粗体星号、引用符、列表符 */
+                .replace(/^[\s>\-*_#]+/, '')
+                .replace(/[\s*_#:：]+$/, '')
+                .replace(/^\*\*|\*\*$/g, '')
+                .trim()
+                .toLowerCase();
+
+        const isLeak = (line: string): boolean => {
+            const t = normalizeTitle(line);
+            if (!t) return false;
+            /* 完全等于已知标题，或形如 "response guidelines" 的近似 */
+            return LEAK_TITLES.some((known) => t === known || t === `${known}:`);
+        };
+
+        const lines = text.split('\n');
+
+        /*
+         * 泄漏块可能出现在开头、中间或结尾。
+         * 逐段扫描：命中泄漏标题后，跳过它后面的列表项/说明行，
+         * 直到遇到空行或正常正文，再继续收集。这样开头/中间/结尾都能处理。
+         */
+        const out: string[] = [];
+        let skipping = false;
+
+        for (const line of lines) {
+            if (isLeak(line)) {
+                skipping = true;
+                continue;
+            }
+
+            if (skipping) {
+                const trimmed = line.trim();
+                const isLeakBody =
+                    trimmed === '' ||
+                    /^[-*+]\s+/.test(trimmed) ||   /* 列表项 */
+                    /^\d+[.)]\s+/.test(trimmed) || /* 有序列表 */
+                    trimmed.startsWith('>');        /* 引用 */
+
+                if (isLeakBody) {
+                    /* 空行结束泄漏块 */
+                    if (trimmed === '') skipping = false;
+                    continue;
+                }
+                skipping = false;
+            }
+
+            out.push(line);
+        }
+
+        const result = out.join('\n').replace(/\n{3,}/g, '\n\n').trim();
+
+        /* 若整段都是泄漏，返回空让调用方兜底，不要退回原文 */
+        return result;
+    }
+
+    /**
+     * 把模型输出的 Markdown 适配成钉钉能渲染的子集。
+     *
+     * 钉钉 markdown 只支持：标题(#### 起)、粗体、斜体、链接、图片、列表、引用、行内代码、代码块。
+     * 不支持：表格(很弱)、# 一级/二级标题、分隔线、HTML。
+     * 所以要降级处理，否则会原样显示 ** 这种符号。
+     */
+    static toDingTalkMarkdown(text: string): string {
+        let out = DingTalkClient.stripLeakedPrompt(text);
+
+        /* ATX 标题 -> 钉钉支持 #### 起的标题 */
+        out = out.replace(/^\s{0,3}#{1,3}\s+(.+)$/gm, '#### $1');
+        out = out.replace(/^\s{0,3}#{4,6}\s+(.+)$/gm, '#### $1');
+
+        /* 分隔线 -> 空行 */
+        out = out.replace(/^\s{0,3}([-*_])\1{2,}\s*$/gm, '');
+
+        /* 任务列表 -> 普通列表 */
+        out = out.replace(/^\s*[-*]\s+\[[ xX]\]\s+/gm, '- ');
+
+        /* HTML 标签直接剥掉 */
+        out = out.replace(/<\/?[a-zA-Z][^>]*>/g, '');
+
+        /* 多余空行压缩 */
+        out = out.replace(/\n{3,}/g, '\n\n');
+
+        out = out.trim();
+
+        /* 模型只吐了提示词时，给个兜底，避免发空消息 */
+        return out || '（没有返回有效内容，请重试）';
+    }
+
+    /** 生成钉钉 markdown 消息所需的标题（必填，取首行纯文本） */
+    static deriveTitle(text: string): string {
+        const firstLine = text
+            .split('\n')
+            .map((l) => l.replace(/^[#>*\-\s]+/, '').replace(/\*\*/g, '').replace(/`/g, '').trim())
+            .find((l) => l.length > 0);
+
+        const title = (firstLine || 'Alma').slice(0, 30);
+        return title || 'Alma';
+    }
+
+    /**
+     * 通过 sessionWebhook 回复（最常用，无需 token）。
+     *
+     * 默认走 markdown，钉钉才会渲染粗体/代码块/列表；
+     * 走 text 的话 **bold** 会原样显示成星号。
+     */
     async replyWebhook(webhook: string, text: string, title?: string): Promise<SendResult> {
         if (!webhook) return { ok: false, error: '缺少 sessionWebhook' };
 
-        const payload = title
-            ? { msgtype: 'markdown', markdown: { title, text } }
-            : { msgtype: 'text', text: { content: text } };
+        const markdown = DingTalkClient.toDingTalkMarkdown(text);
+        const payload = {
+            msgtype: 'markdown',
+            markdown: {
+                title: title || DingTalkClient.deriveTitle(markdown),
+                text: markdown,
+            },
+        };
 
         try {
             const res = await fetch(webhook, {
