@@ -87,6 +87,8 @@ Stream 模式不需要公网地址，这点对本地运行的 Alma 很关键。
 | `/ws` | 列出可绑定工作区 |
 | `/use <id>` | 给当前会话换绑工作区并新建线程 |
 
+群里需要 `@机器人 /命令`，私聊可直接发。`@` 前缀会被自动剥离。
+
 ## 会话模式
 
 - `per-chat`（默认）：一个群/单聊一个线程，群内共享上下文
@@ -124,10 +126,16 @@ node cmd/send.mjs <staffId> "消息内容"
 ### 纯逻辑单测（无需 Alma）
 
 ```bash
-bun test/unit.mjs
+bun test/unit.mjs        # 分段与流式截取          13 项
+bun test/format.mjs      # Markdown 降级 + 泄漏清洗  37 项
+bun test/sender.mjs      # 发送人拼装 + @ 剥离       22 项
+bun test/mention.mjs     # @ 提及与清洗边界          20 项
+bun test/fixes.mjs       # 四个线上问题回归          20 项
+bun test/notify.mjs      # 防刷屏                   6 项
+bun test/subscribe.mjs   # SDK 订阅方式              6 项
 ```
 
-覆盖消息分段与流式截取的边界情况。
+合计 124 项，全部离线可跑。
 
 ### 端到端（需要 Alma 运行）
 
@@ -158,7 +166,8 @@ ALMA_DT_SELFTEST=1 bun test/inbound.mjs
 | **图片不支持** | 钉钉图片消息只回提示，未接 `media/download`。 |
 | **文件不回传** | agent 生成的文件只在回复里给路径，未走钉钉 `media/upload`。 |
 | **端口需手填** | 插件拿不到 Alma 端口，只能靠配置。 |
-| **串行处理** | 同一时刻只处理一条入站消息，避免并发写同一线程。多群之间靠队列自然排队。 |
+| **同一会话串行** | 上一轮未结束时新消息会排队，回复稍慢但不会丢失。多群之间互不影响。 |
+| **跨企业用户无 staffId** | 外部企业同事的消息没有 `senderStaffId`，白名单对这类用户不生效。 |
 
 ## 迁移到官方渠道 API 的成本
 
