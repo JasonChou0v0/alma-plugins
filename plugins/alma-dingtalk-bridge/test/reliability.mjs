@@ -30,7 +30,7 @@ function setup(over = {}) {
   b.dingtalk.replyWebhook=async(w,text)=>{replies.push({w,text});return {ok:true};};
   const msg=(id,chat='c1',text=id)=>({data:{msgId:id,conversationId:chat,conversationType:'2',senderStaffId:'a',senderNick:'A',msgtype:'text',text:{content:text},sessionWebhook:`https://test.invalid/${chat}`}});
   const complete=(id,text='answer')=>{
-    b.socket.dispatch({type:'message_delta',data:{threadId:id,deltas:[{type:'text_append',text}]}});
+    b.socket.dispatch({type:'message_delta',data:{threadId:id,deltas:[{type:'text_append',partType:'text',text}]}});
     b.socket.dispatch({type:'generation_completed',data:{threadId:id}});
   };
   return {b,cfg,secret,settings,sent,replies,msg,complete,context};
@@ -39,6 +39,36 @@ function setup(over = {}) {
 const realFetch=globalThis.fetch;
 globalThis.fetch=()=>{throw Error('unexpected network');};
 try {
+  for (const streamingReply of [false, true]) {
+    const {b,sent,msg,complete,replies}=setup({streamingReply});
+    const run=b.handleIncoming(msg('typed-output'));
+    await until(()=>sent.length===1);
+    const id=sent[0].data.threadId;
+    const turn=b.socket.turns.get(id);
+    const observed=[];
+    const callback=b.socket.cb.onTextDelta;
+    b.socket.cb.onTextDelta=(t,text)=>{observed.push(text);callback(t,text);};
+    b.socket.dispatch({type:'message_delta',data:{threadId:id,deltas:[
+      {type:'text_append',partType:'reasoning',text:'PRIVATE_REASONING_SENTINEL'},
+      {type:'text_append',text:'UNKNOWN_TYPE_SENTINEL'},
+      {type:'text_append',partType:'tool-output',text:'TOOL_SENTINEL'},
+    ]}});
+    await b.doFlush(turn);
+    check(`streaming=${streamingReply}：过程内容不进入缓冲或发送`,()=>{
+      assert.equal(turn.text,'');assert.equal(replies.length,0);assert.deepEqual(observed,[]);
+    });
+    b.socket.dispatch({type:'message_delta',data:{threadId:id,deltas:[
+      {type:'text_append',partType:'text',text:'最终'},
+      {type:'text_append',partType:'reasoning',text:'LATE_REASONING_SENTINEL'},
+    ]}});
+    complete(id,'答复');await run;
+    check(`streaming=${streamingReply}：只向钉钉发送正文，过程标记出现次数为零`,()=>{
+      const output=replies.map(r=>r.text).join('');assert.equal(output,'最终答复');
+      assert.equal((output.match(/SENTINEL/g)||[]).length,0);
+    });
+    check(`streaming=${streamingReply}：流式回调也只有正文`,()=>assert.deepEqual(observed,['最终','答复']));
+    b.socket.close();
+  }
   {
     const {b,sent,msg,complete,replies}=setup();
     const first=b.handleIncoming(msg('first'));

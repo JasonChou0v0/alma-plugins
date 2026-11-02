@@ -56,6 +56,8 @@ manifest 的 `settings:write` 用于清空旧凭据以及管理员授权命令�
 | `replyOnToolUse` | `true` | 一轮最多一次处理提示 |
 | `logRawPayload` | `true` | 全量本地载荷归档；包含 webhook 等敏感字段 |
 
+WebSocket 的 `text_append` 同时承载正文和推理块。插件只接纳明确标记 `partType=text` 的增量；`reasoning` 及未知类型不进入最终回复或流式缓冲，避免发送过程内容。
+
 凭据及端口变更会自动重连；启动失败按 2 秒至 60 秒指数退避重试。卸载会取消重试并释放连接。群策略或白名单在消息执行前再次检查。
 
 ## 命令与状态

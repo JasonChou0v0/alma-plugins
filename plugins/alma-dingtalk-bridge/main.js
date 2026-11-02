@@ -21126,8 +21126,10 @@ class AlmaSocket {
     switch (delta?.type) {
       case "text_append": {
         if (typeof delta.text === "string" && delta.text) {
-          turn.text += delta.text;
           turn.lastActivity = Date.now();
+          if (delta.partType !== "text")
+            break;
+          turn.text += delta.text;
           this.cb.onTextDelta(turn, delta.text);
         }
         break;
