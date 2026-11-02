@@ -1,6 +1,7 @@
 /**
  * 验证 @ 提及处理与消息泄漏清洗的边界。
  */
+import { DingTalkBridge } from '../lib/bridge.ts';
 import { AlmaSocket } from '../lib/alma-socket.ts';
 import { DingTalkClient } from '../lib/dingtalk-client.ts';
 
@@ -169,6 +170,51 @@ console.log('\n[引用消息]');
     const nullQuote = AlmaSocket.composeEphemeralMetadata({ nick: '王五', staffId: 's3', quoted: null });
     const metaNull = parseMeta(nullQuote);
     check('quoted=null 不产生 quoted 字段', metaNull?.quoted === undefined);
+}
+
+/* ---------- 真实入站载荷中的嵌套引用字段 ---------- */
+console.log('\n[载荷引用优先与缓存兜底]');
+{
+    const bridge = Object.create(DingTalkBridge.prototype);
+    bridge.msgCache = new Map([
+        ['group-a:original', { nick: '缓存作者', text: '旧缓存摘要' }],
+        ['group-b:other', { nick: '另一个群', text: '不可跨群读取' }],
+    ]);
+    bridge.cfg = () => ({ robotName: '豆豆' });
+    const payload = {
+        conversationId: 'group-a', msgtype: 'text', originalMsgId: 'original',
+        text: {
+            content: '@豆豆', isReplyMsg: true,
+            repliedMsg: { msgId: 'original', senderId: 'quoted-author', msgType: 'text',
+                content: { text: '  事件中的完整引用\n第二行  ' } },
+        },
+    };
+    const quote = bridge.resolveQuotedMessage(payload);
+    check('嵌套引用正文优先于旧缓存', quote?.text === payload.text.repliedMsg.content.text);
+    check('不把引用作者ID猜成昵称', quote?.nick === '');
+    check('引用保留原始换行与空格', quote?.text.startsWith('  ') && quote.text.endsWith('  '));
+    check('没有 originalMsgId 仍可读取内嵌引用',
+        bridge.resolveQuotedMessage({ ...payload, originalMsgId: undefined })?.text === quote.text);
+    const withText = text => ({ ...payload, text });
+    check('没有内嵌正文时查询同群缓存',
+        bridge.resolveQuotedMessage(withText({ content: '问题' }))?.text === '旧缓存摘要');
+    check('内嵌正文为空时查询缓存',
+        bridge.resolveQuotedMessage(withText({ content: '', repliedMsg: { content: { text: '  ' } } }))?.text === '旧缓存摘要');
+    check('正文类型异常不崩溃且回退缓存',
+        bridge.resolveQuotedMessage(withText({ content: '', repliedMsg: { content: { text: { malformed: true } } } }))?.text === '旧缓存摘要');
+    check('可按 repliedMsg.msgId 查同群缓存',
+        bridge.resolveQuotedMessage({ ...payload, originalMsgId: undefined,
+            text: { content: '', repliedMsg: { msgId: 'original' } } })?.text === '旧缓存摘要');
+    const missing = bridge.resolveQuotedMessage({ conversationId: 'group-a', originalMsgId: 'other' });
+    check('缓存缺失不读取其它群的同ID消息', missing?.text === '');
+    check('普通消息不虚构引用', bridge.resolveQuotedMessage({ conversationId: 'group-a', text: { content: '你好' } }) === null);
+    check('仅 text.isReplyMsg 也保留引用标记',
+        bridge.resolveQuotedMessage({ conversationId: 'group-a', text: { content: '', isReplyMsg: true } })?.text === '');
+    check('只@机器人且缺少顶层引用ID时仍生成占位正文',
+        bridge.extractText({ ...payload, originalMsgId: undefined }).includes('用户引用了一条消息'));
+    const meta = parseMeta(AlmaSocket.composeEphemeralMetadata({ nick: '提问者', staffId: 'test-user', quoted: quote }));
+    check('实际引用正文送入agent元数据并保持不可信标记',
+        meta?.quoted?.text === quote.text && meta.quoted.textTrust === false && meta.quoted.isInstruction === false);
 }
 
 console.log(`\n结果: ${pass} 通过, ${fail} 失败`);

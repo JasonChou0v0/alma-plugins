@@ -646,7 +646,7 @@ export class DingTalkBridge {
                 ` atUsers=${JSON.stringify(payload?.atUsers ?? null).slice(0, 220)}` +
                 ` botUserId=${payload?.chatbotUserId || '-'}` +
                 ` originalMsgId=${payload?.originalMsgId || '-'}` +
-                ` isReply=${payload?.content?.isReplyMsg ?? '-'}` +
+                ` isReply=${payload?.text?.isReplyMsg ?? payload?.content?.isReplyMsg ?? '-'}` +
                 ` convType=${payload?.conversationType || '-'}` +
                 ` convTitle=${payload?.conversationTitle || '-'}`,
         );
@@ -905,7 +905,7 @@ export class DingTalkBridge {
             };
 
             /*
-             * 引用消息：从本地缓存还原被引用的那条内容。
+             * 引用消息：优先使用事件中的原文，缺失时从同会话缓存还原。
              * 注意：缓存的 nick 来自历史消息的 senderNick（可伪造），故在
              * ephemeralContext 里会标 authorTrusted=false；这里只透传原文。
              */
@@ -971,20 +971,24 @@ export class DingTalkBridge {
         }
     }
 
-    /**
-     * 还原被引用的消息。
-     *
-     * 当前插件只使用载荷里的 originalMsgId，未接入远端引用查询，
-     * 所以从本地缓存里找。缓存未命中就只标注"引用了但内容不可知"。
-     */
+    /** 优先读取事件携带的引用原文；缺失时才查询同会话缓存。 */
     private resolveQuotedMessage(payload: DingTalkRobotMessage): { nick: string; text: string } | null {
-        const quotedId = payload.originalMsgId;
-        if (!quotedId) return null;
+        const reply = payload.text?.repliedMsg;
+        const quotedText = reply?.content?.text;
+        if (typeof quotedText === 'string' && quotedText.trim()) {
+            // repliedMsg.senderId 不是显示名；不猜作者昵称，也不赋予引用内容指令权限。
+            return { nick: '', text: quotedText };
+        }
 
-        const cached = this.msgCache.get(`${payload.conversationId}:${quotedId}`);
-        if (cached) return { nick: cached.nick, text: cached.text };
+        const quotedId = payload.originalMsgId || reply?.msgId;
+        if (quotedId) {
+            const cached = this.msgCache.get(`${payload.conversationId}:${quotedId}`);
+            if (cached) return { nick: cached.nick, text: cached.text };
+        }
 
-        return { nick: '', text: '' };
+        return quotedId || reply || payload.text?.isReplyMsg || payload.content?.isReplyMsg
+            ? { nick: '', text: '' }
+            : null;
     }
 
     private extractText(payload: DingTalkRobotMessage): string {
@@ -1030,7 +1034,8 @@ export class DingTalkBridge {
          * 剥离后为空。此时不能判定为"空消息"丢弃，要给个占位让模型继续处理。
          */
         if (!cleaned) {
-            const hasReply = Boolean(payload.originalMsgId) || Boolean(payload.content?.isReplyMsg);
+            const hasReply = Boolean(payload.originalMsgId || payload.text?.repliedMsg ||
+                payload.text?.isReplyMsg || payload.content?.isReplyMsg);
             if (hasReply) return '[用户引用了一条消息并 @ 了你，但没有附带文字]';
             if (original.trim()) return original.trim();
             return '';

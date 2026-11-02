@@ -125,7 +125,17 @@ export interface DingTalkRobotMessage {
     senderNick?: string;
     msgId: string;
     msgtype: string;
-    text?: { content: string };
+    text?: {
+        content: string;
+        isReplyMsg?: boolean;
+        repliedMsg?: {
+            createdAt?: number;
+            senderId?: string;
+            msgType?: string;
+            msgId?: string;
+            content?: { text?: string };
+        };
+    };
     content?: { richText?: string; downloadCode?: string; isReplyMsg?: boolean };
     /** 被 @ 的人列表 */
     atUsers?: Array<{ dingtalkId?: string; staffId?: string; name?: string }>;

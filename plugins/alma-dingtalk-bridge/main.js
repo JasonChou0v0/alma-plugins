@@ -22096,7 +22096,7 @@ class DingTalkBridge {
     }
     if (payload?.chatbotUserId)
       this.botDingTalkId = payload.chatbotUserId;
-    this.ctx.logger.info(`入站字段: conv=${payload?.conversationId ? "ok" : "MISSING"} staff=${payload?.senderStaffId || "-"} sender=${payload?.senderId || "-"} nick=${payload?.senderNick || "-"} corp=${payload?.senderCorpId || "-"} botCorp=${payload?.chatbotCorpId || "-"} webhook=${payload?.sessionWebhook ? "ok" : "MISSING"} atUsers=${JSON.stringify(payload?.atUsers ?? null).slice(0, 220)} botUserId=${payload?.chatbotUserId || "-"} originalMsgId=${payload?.originalMsgId || "-"} isReply=${payload?.content?.isReplyMsg ?? "-"} convType=${payload?.conversationType || "-"} convTitle=${payload?.conversationTitle || "-"}`);
+    this.ctx.logger.info(`入站字段: conv=${payload?.conversationId ? "ok" : "MISSING"} staff=${payload?.senderStaffId || "-"} sender=${payload?.senderId || "-"} nick=${payload?.senderNick || "-"} corp=${payload?.senderCorpId || "-"} botCorp=${payload?.chatbotCorpId || "-"} webhook=${payload?.sessionWebhook ? "ok" : "MISSING"} atUsers=${JSON.stringify(payload?.atUsers ?? null).slice(0, 220)} botUserId=${payload?.chatbotUserId || "-"} originalMsgId=${payload?.originalMsgId || "-"} isReply=${payload?.text?.isReplyMsg ?? payload?.content?.isReplyMsg ?? "-"} convType=${payload?.conversationType || "-"} convTitle=${payload?.conversationTitle || "-"}`);
     if (this.cfg().logRawPayload) {
       this.archivePayload(payload, downstream);
     }
@@ -22338,13 +22338,18 @@ class DingTalkBridge {
     }
   }
   resolveQuotedMessage(payload) {
-    const quotedId = payload.originalMsgId;
-    if (!quotedId)
-      return null;
-    const cached = this.msgCache.get(`${payload.conversationId}:${quotedId}`);
-    if (cached)
-      return { nick: cached.nick, text: cached.text };
-    return { nick: "", text: "" };
+    const reply = payload.text?.repliedMsg;
+    const quotedText = reply?.content?.text;
+    if (typeof quotedText === "string" && quotedText.trim()) {
+      return { nick: "", text: quotedText };
+    }
+    const quotedId = payload.originalMsgId || reply?.msgId;
+    if (quotedId) {
+      const cached = this.msgCache.get(`${payload.conversationId}:${quotedId}`);
+      if (cached)
+        return { nick: cached.nick, text: cached.text };
+    }
+    return quotedId || reply || payload.text?.isReplyMsg || payload.content?.isReplyMsg ? { nick: "", text: "" } : null;
   }
   extractText(payload) {
     const type = payload.msgtype;
@@ -22376,7 +22381,7 @@ class DingTalkBridge {
     });
     const cleaned = text.replace(/[ \t]+/g, " ").trim();
     if (!cleaned) {
-      const hasReply = Boolean(payload.originalMsgId) || Boolean(payload.content?.isReplyMsg);
+      const hasReply = Boolean(payload.originalMsgId || payload.text?.repliedMsg || payload.text?.isReplyMsg || payload.content?.isReplyMsg);
       if (hasReply)
         return "[用户引用了一条消息并 @ 了你，但没有附带文字]";
       if (original.trim())
