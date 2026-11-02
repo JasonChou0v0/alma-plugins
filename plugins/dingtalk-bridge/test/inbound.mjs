@@ -84,7 +84,7 @@ function downstream(text, overrides = {}) {
         data: JSON.stringify({
             conversationId: 'cid_e2e_group',
             conversationType: '2',
-            conversationTitle: 'E2E 测试群',
+            conversationTitle: '[TEST] E2E 群',
             senderStaffId: 'staff_e2e',
             senderNick: 'Tester',
             msgId: `msg_e2e_${Date.now()}_${seq}`,
@@ -204,6 +204,12 @@ for (const key of Object.keys(bridge.getSessions())) {
         /* ignore */
     }
 }
-await activation.dispose?.();
+/*
+     * 不要调用 activation.dispose()：
+     * 测试是在运行中的 Alma 进程里加载插件的，dispose 会真的把线上插件卸载，
+     * 导致真实用户的消息无人接收（曾导致 2 小时静默）。
+     * 只清理测试自己建的线程与本地服务器即可。
+     */
+    process.env.ALMA_DT_KEEP_ALIVE = '1';
 webhookServer.close();
 process.exit(passed === results.length ? 0 : 1);
