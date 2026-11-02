@@ -16,14 +16,19 @@
 import type { PluginContext, PluginActivation } from 'alma-plugin-api';
 
 import { DingTalkBridge } from './lib/bridge';
+import { createLogger } from './lib/log';
 import type { BridgeConfig, SessionMode } from './lib/types';
 
 const STATUS_BAR_ID = 'alma-dingtalk-bridge.status';
 
 export async function activate(context: PluginContext): Promise<PluginActivation> {
-    const { logger, settings, ui, commands } = context;
+    const { settings, ui, commands } = context;
+
+    /* 宿主 console 不落盘，这里包一层写到 ~/Library/Logs/Alma/ */
+    const logger = createLogger(context.logger);
 
     logger.info('DingTalk Bridge 正在激活…');
+    logger.info('日志文件:', logger.filePath());
 
     /* ---------------- 配置读取 ---------------- */
 
@@ -59,7 +64,10 @@ export async function activate(context: PluginContext): Promise<PluginActivation
 
     /* ---------------- 桥接实例 ---------------- */
 
-    const bridge = new DingTalkBridge({ context, config: readConfig });
+    const bridge = new DingTalkBridge({
+        context: { ...context, logger } as PluginContext,
+        config: readConfig,
+    });
 
     /* ---------------- 状态栏 ---------------- */
 
@@ -93,10 +101,12 @@ export async function activate(context: PluginContext): Promise<PluginActivation
             `最近消息：${formatTime(status.lastMessageAt)}`,
             `会话数：${status.sessionCount}`,
             ...(status.lastError ? [`最近错误：${status.lastError}`] : []),
+            `日志：${logger.filePath()}`,
         ].join('\n');
     };
 
     statusBar.show();
+    /* 点击状态栏直接弹状态：走已注册的 dingtalkBridge.status 命令 */
     statusBar.command = 'dingtalkBridge.status';
     refreshStatusBar();
 
@@ -148,6 +158,10 @@ export async function activate(context: PluginContext): Promise<PluginActivation
                 `Alma API：127.0.0.1:${config.almaApiPort}`,
                 `WebSocket：${status.socketConnected ? '✅ 已连接' : '❌ 未连接'}`,
                 status.lastError ? `最近错误：${status.lastError}` : '',
+                '',
+                `日志：${logger.filePath()}`,
+                '',
+                '提示：改完配置后点「重连」或重新拨一次插件开关即可生效。',
             ].filter(Boolean);
             ui.showNotification(lines.join('\n'), { type: 'info', duration: 8000 });
         }),
