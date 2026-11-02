@@ -8,6 +8,7 @@ import { DWClient, TOPIC_ROBOT } from 'dingtalk-stream';
 import type { PluginContext } from 'alma-plugin-api';
 
 import { AlmaApi } from './alma-api';
+import { loadAlmaImage } from './media';
 import { AuthorizationCommands } from './authorization';
 import { AlmaSocket } from './alma-socket';
 import { DingTalkClient } from './dingtalk-client';
@@ -536,7 +537,7 @@ export class DingTalkBridge {
     }
 
     private scheduleFlush(turn: TurnState): void {
-        if (turn.flushTimer || turn.finished) return;
+        if (turn.flushTimer || turn.finished || turn.attachments?.length) return;
         const elapsed = Date.now() - (turn.flushStartedAt ?? turn.startedAt);
         if (elapsed < FLUSH_INTERVAL_MS) return;
 
@@ -547,7 +548,7 @@ export class DingTalkBridge {
     }
 
     private async doFlush(turn: TurnState): Promise<void> {
-        if (turn.finished || turn.flushInFlight || (turn.flushCount ?? 0) >= 3) return;
+        if (turn.finished || turn.flushInFlight || turn.attachments?.length || (turn.flushCount ?? 0) >= 3) return;
         const piece = DingTalkBridge.takeFlushable(turn.text, turn.flushedChars ?? 0);
         if (!piece) return;
         turn.flushCount = (turn.flushCount ?? 0) + 1;
@@ -582,6 +583,41 @@ export class DingTalkBridge {
     /* 回合收尾                                                      */
     /* ============================================================ */
 
+    private async sendTurnImages(turn: TurnState): Promise<{ failed: boolean; summary: string }> {
+        if (!turn.attachments?.length && !turn.attachmentOverflow) return { failed: false, summary: '' };
+        const authorized = () => {
+            const cfg = this.cfg();
+            return !this.stopping && !turn.stopRequested && cfg.allowedStaffIds.includes(turn.senderId) &&
+                (turn.conversationType === '1' || (turn.conversationType === '2' &&
+                    cfg.allowedConversationIds.includes(turn.chatId) && cfg.groupAgentPolicy === 'fullTools'));
+        };
+        let succeeded = 0;
+        const errors: string[] = [];
+        for (const attachment of turn.attachments ?? []) {
+            try {
+                if (!authorized()) throw new Error('图片发送权限已撤销或回合已停止');
+                const image = await loadAlmaImage(attachment, this.cfg().almaApiPort);
+                const result = await this.dingtalk.sendImage(
+                    turn.conversationType === '2' ? { conversationId: turn.chatId } : { staffId: turn.senderId },
+                    image, authorized,
+                );
+                if (!result.ok) throw new Error(result.error || '钉钉图片发送未成功确认');
+                succeeded++;
+            } catch (e) {
+                // Only known local validation errors / client summaries are safe to show.
+                const message = e instanceof Error ? e.message : '';
+                errors.push(/^(暂只支持|图片|仅允许|读取 Alma|钉钉图片)/.test(message) ? message : '图片读取或发送失败');
+            }
+        }
+        if (turn.attachmentOverflow) errors.push('每轮最多发送 4 张图片，超出部分未发送');
+        return {
+            failed: errors.length > 0,
+            summary: [succeeded ? `🖼️ ${succeeded} 张图片已获钉钉发送成功回执。` : '',
+                errors.length ? `⚠️ 图片未全部发送成功：${[...new Set(errors)].join('；')}。本机附件发送成功不代表钉钉已收到。` : '',
+            ].filter(Boolean).join('\n'),
+        };
+    }
+
     private async finalizeTurn(turn: TurnState): Promise<void> {
         try {
             this.cancelFlush(turn);
@@ -593,8 +629,10 @@ export class DingTalkBridge {
              * 既可能掩饰增量未完成，也与「单一权威缓冲」相悖。
              * 若 WS 丢了增量，这里如实发出（可能偏短），不掩盖未完成。
              */
-            const full = turn.text;
-            const alreadySent = turn.streamed ? (turn.flushedChars ?? 0) : 0;
+            const media = await this.sendTurnImages(turn);
+            // A failed attachment must not be followed by an agent claim of successful image delivery.
+            const full = media.failed ? media.summary : turn.text + (media.summary ? '\n\n' + media.summary : '');
+            const alreadySent = !media.failed && turn.streamed ? (turn.flushedChars ?? 0) : 0;
             const remainder = full.slice(alreadySent);
 
             if (remainder) {
@@ -896,6 +934,7 @@ export class DingTalkBridge {
                 chatId,
                 webhook,
                 senderId,
+                conversationType: String(payload.conversationType),
                 text: '',
                 tools: [],
                 announcedTools: [],

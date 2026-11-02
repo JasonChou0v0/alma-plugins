@@ -59,7 +59,18 @@ export interface SessionRecord {
     title?: string;
 }
 
+export interface TurnAttachment {
+    url: string;
+    mediaType: string;
+    filename?: string;
+}
+
 export interface TurnState {
+    /** Explicit file parts from assistant messages belonging to this turn. */
+    attachments?: TurnAttachment[];
+    assistantMessageIds?: Set<string>;
+    attachmentOverflow?: boolean;
+    conversationType?: string;
     threadId: string;
     chatId: string;
     webhook: string;

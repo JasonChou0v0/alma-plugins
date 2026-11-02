@@ -112,6 +112,19 @@ WebSocket 的 `text_append` 同时承载正文和推理块。插件只接纳明�
 
 `dashboard/data.json` 是本地私密快照，已加入 `.gitignore`。看板不是持久消息数据库，不应对外开放。引用内容优先读取事件的 `text.repliedMsg.content.text`，保留正文和换行；缺失时才匹配同会话缓存（最多 500 条，每条摘要最多 500 字）。两者均无内容时明确标记引用原文缺失。未接入远端引用查询，不据此断言平台不存在查询接口。
 
+## 生成图片回传
+
+Agent 生成图片后调用 `alma send photo`，将图片挂到当前 Alma 线程。插件在本回合中捕获明确的 `file` 附件，读取本机图库缓存，调用钉钉媒体上传接口，再以同一个机器人向原群或原私聊发送 `sampleImageMsg`。只在收到有效 `processQueryKey` 后报告钉钉发送接口已接受，不等同于用户已读。
+
+- 支持 PNG、JPEG、GIF、BMP，每张最多 20MB，每轮最多 4 张；同一 URL 的重复事件只发送一次。
+- 仅加载当前回合的 Alma 图库附件，不扫描正文里的路径，不抓取任意 URL，不读取任意本地文件。
+- 发送前以及上传后再次检查用户/群白名单和群工具策略；不会改用其它账号或其它会话。
+- 收到附件后暂缓剩余流式文本，待图片发送结果确定后收尾。失败时返回错误说明，不沿用 Agent 的「图片已发送」说法；不自动重试状态不确定的发送，避免重复图片。
+- `alma send` 的 “Sent photo to thread” 仅表示本机附件就绪。插件补充的钉钉发送回执才表示机器人接口已接受。
+- 此能力使用应用机器人的媒体上传/发消息权限；如钉钉拒绝权限或群目标，必须按实际错误处理。一般文件、音频和视频附件暂不支持。
+
+接口依据：[图片模板与 mediaId](https://open.dingtalk.com/document/development/robot-message-type.md)、[上传媒体文件](https://open.dingtalk.com/document/development/upload-media-files.md)、[机器人群消息](https://open.dingtalk.com/document/development/the-robot-sends-a-group-message.md)。
+
 ## 构建与验证
 
 使用 **Bun 1.3.14**，提交 `bun.lock`。`dingtalk-stream` 的 beta 版本固定为 `2.1.6-beta.1`，直接使用的 `ws` 也显式锁定。
@@ -133,4 +146,4 @@ bun run check:bundle
 
 `/ws/threads` 与 `/api/*` 是 Alma 内部协议，没有兼容承诺。本地已核验版本为 Alma 0.4.357；升级后需重新验证事件格式与宿主接口。调用集中在 `lib/alma-socket.ts` 和 `lib/alma-api.ts`，保留这层边界便于迁移正式渠道 API。
 
-当前未实现正式渠道 API、可靠的群只读工具模式、图片理解、附件回传。不能把默认拒绝群生成称为「已支持群只读聊天」。
+当前未实现正式渠道 API、可靠的群只读工具模式、图片理解和通用文件附件回传。不能把默认拒绝群生成称为「已支持群只读聊天」。

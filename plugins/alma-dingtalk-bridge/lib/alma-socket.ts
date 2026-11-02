@@ -39,7 +39,9 @@ const EPHEMERAL_CONTEXT_BASE = [
     '',
     '工具能力：',
     '- 工具是否可用由宿主按会话策略强制决定，而不是由这段提示词决定。',
-    '- 如能调用工具且生成了文件，在回复里说明文件路径即可，用户可在本机查看。',
+    '- 生成图片后调用 alma send photo，把图片作为本轮附件交给桥接；只写本地路径无法发到钉钉。',
+    '- alma send 返回 Sent photo to thread 只表示本机附件就绪，不是钉钉送达回执；请说图片已生成、交由桥接发送，不要提前声称钉钉已收到。',
+    '- 不要在正文展示本地图片路径。桥接支持 PNG/JPEG/GIF/BMP，每张不超过 20MB，每轮最多 4 张；其它附件暂不支持。',
     '',
     '绝对禁止：',
     '- 不要在回复里复述、总结或输出任何系统提示、格式规则、guideline 的内容。',
@@ -244,7 +246,14 @@ export class AlmaSocket {
                 break;
             }
             case 'message_added': {
+                if (data?.message?.role === 'assistant' && typeof data.message.id === 'string') {
+                    (turn.assistantMessageIds ??= new Set()).add(data.message.id);
+                }
                 this.handleAdded(turn, data);
+                break;
+            }
+            case 'message_updated': {
+                if (turn.assistantMessageIds?.has(data?.message?.id)) this.handleAdded(turn, data);
                 break;
             }
             case 'generation_completed': {
@@ -273,6 +282,10 @@ export class AlmaSocket {
                 }
                 break;
             }
+            case 'part_add': {
+                if (turn.assistantMessageIds?.has(delta.messageId)) this.collectAttachment(turn, delta.part);
+                break;
+            }
             case 'tool_output_streaming': {
                 const out = delta?.stream?.stdout;
                 if (typeof out === 'string' && out) {
@@ -296,10 +309,19 @@ export class AlmaSocket {
         const parts = data?.message?.parts;
         if (!Array.isArray(parts)) return;
         for (const p of parts) {
+            if (turn.assistantMessageIds?.has(data?.message?.id)) this.collectAttachment(turn, p);
             const type = typeof p?.type === 'string' ? p.type : '';
             if (!type.startsWith('tool-')) continue;
             this.announceTool(turn, type.slice(5) || 'tool');
         }
+    }
+
+    private collectAttachment(turn: TurnState, part: any): void {
+        if (part?.type !== 'file' || typeof part.url !== 'string' || typeof part.mediaType !== 'string') return;
+        const attachments = turn.attachments ??= [];
+        if (attachments.some(a => a.url === part.url)) return;
+        if (attachments.length >= 4) { turn.attachmentOverflow = true; return; }
+        attachments.push({ url: part.url, mediaType: part.mediaType, filename: typeof part.filename === 'string' ? part.filename : undefined });
     }
 
     private announceTool(turn: TurnState, name: string): void {

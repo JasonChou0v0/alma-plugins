@@ -9,6 +9,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import type { SendResult } from './types';
+import type { OutboundImage } from './media';
 
 export interface DingTalkLogger {
     info: (...a: unknown[]) => void;
@@ -319,6 +320,50 @@ export class DingTalkClient {
         } catch (e) {
             this.logger.warn('获取 accessToken 异常', e);
             return null;
+        }
+    }
+
+    /** Upload image media and send with the existing bot identity; never fall back to another recipient. */
+    async sendImage(
+        target: { conversationId?: string; staffId?: string }, image: OutboundImage,
+        authorized: () => boolean,
+    ): Promise<SendResult> {
+        if (Boolean(target.conversationId) === Boolean(target.staffId)) return { ok: false, error: '图片目标无效' };
+        if (!authorized()) return { ok: false, error: '图片目标或发送人已取消授权' };
+        const token = await this.getAccessToken();
+        if (!token) return { ok: false, error: '图片上传凭据不可用' };
+        try {
+            const form = new FormData();
+            form.set('media', new Blob([new Uint8Array(image.bytes)], { type: image.mediaType }), image.filename);
+            const upload = await fetch(`https://oapi.dingtalk.com/media/upload?access_token=${encodeURIComponent(token)}&type=image`, {
+                method: 'POST', body: form, redirect: 'error', signal: AbortSignal.timeout(30_000),
+            });
+            const media: any = await upload.json().catch(() => null);
+            if (!upload.ok || media?.errcode !== 0 || typeof media?.media_id !== 'string' || !media.media_id) {
+                return { ok: false, error: `钉钉图片上传失败（HTTP ${upload.status}）` };
+            }
+            if (!authorized()) return { ok: false, error: '图片上传后授权已变更，未发送' };
+            const { robotCode } = this.credentials();
+            const payload = {
+                robotCode, msgKey: 'sampleImageMsg', msgParam: JSON.stringify({ photoURL: media.media_id }),
+                ...(target.conversationId ? { openConversationId: target.conversationId } : { userIds: [target.staffId] }),
+            };
+            const sent = await fetch(target.conversationId ? GROUP_SEND_URL : SEND_URL, {
+                method: 'POST', signal: AbortSignal.timeout(20_000), redirect: 'error',
+                headers: { 'Content-Type': 'application/json', 'x-acs-dingtalk-access-token': token },
+                body: JSON.stringify(payload),
+            });
+            const receipt: any = await sent.json().catch(() => null);
+            if (!sent.ok || (receipt?.errcode != null && receipt.errcode !== 0) || receipt?.code ||
+                typeof receipt?.processQueryKey !== 'string' || !receipt.processQueryKey ||
+                receipt?.invalidUserIdList?.length || receipt?.invalidStaffIdList?.length || receipt?.flowControlledStaffIdList?.length) {
+                return { ok: false, error: `钉钉图片发送未成功确认（HTTP ${sent.status}）` };
+            }
+            this.logger.info('钉钉图片发送已获成功回执');
+            return { ok: true };
+        } catch {
+            // Never echo fetch errors: upload URLs carry access tokens. Do not retry an uncertain send.
+            return { ok: false, error: '图片上传或发送异常，未自动重试，请核对钉钉是否收到' };
         }
     }
 
