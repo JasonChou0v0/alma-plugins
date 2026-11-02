@@ -104,13 +104,13 @@
                 },
                 "dingtalkBridge.streamingReply": {
                     "type": "boolean",
-                    "default": true,
-                    "description": "流式回复：边生成边分段推送。关闭则生成结束后一次性发送"
+                    "default": false,
+                    "description": "流式回复：边生成边推送（最多 3 段）。钉钉里逐段推送容易刷屏，默认关闭，生成完一次性发送。"
                 },
                 "dingtalkBridge.replyOnToolUse": {
                     "type": "boolean",
                     "default": true,
-                    "description": "使用工具时先推送一条「正在使用 xxx…」提示，避免长时间无响应"
+                    "description": "使用工具时先推一条「正在处理…」提示（整轮只发一次，不会按工具刷屏）"
                 }
             }
         }
