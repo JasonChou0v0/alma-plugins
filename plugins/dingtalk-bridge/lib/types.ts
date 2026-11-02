@@ -43,6 +43,10 @@ export interface TurnState {
     flushStartedAt?: number;
     flushedChars?: number;
     streamed?: boolean;
+    /** 已推送的流式分段数，用于限流 */
+    flushCount?: number;
+    /** 本轮是否已发过「正在处理」提示 */
+    toolNoticeSent?: boolean;
     stopRequested?: boolean;
 }
 
@@ -81,7 +85,13 @@ export interface DingTalkRobotMessage {
     msgId: string;
     msgtype: string;
     text?: { content: string };
-    content?: { richText?: string; downloadCode?: string };
+    content?: { richText?: string; downloadCode?: string; isReplyMsg?: boolean };
+    /** 被 @ 的人列表 */
+    atUsers?: Array<{ dingtalkId?: string; staffId?: string; name?: string }>;
+    /** 引用的消息（消息本身被 @ 机器人时，这里可能缺 senderStaffId） */
+    originalMsgId?: string;
+    /** 机器人自身 openId，用于判断是否被 @ */
+    chatbotUserId?: string;
     sessionWebhook: string;
     sessionWebhookExpiredTime: number;
     robotCode: string;
