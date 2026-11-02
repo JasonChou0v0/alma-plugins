@@ -33,6 +33,10 @@ export function createStorage() {
 export function createContext(opts = {}) {
     const { pluginSettings = {}, quiet = false, root = process.cwd(), apiPort = 23001 } = opts;
 
+    /*
+     * 测试专用 storage：内存态，不写磁盘。
+     * 线上插件用的是 storage.local，这里隔离掉，测试不会污染真实会话映射。
+     */
     const storage = createStorage();
     const commands = new Map();
     const notifications = [];
