@@ -228,9 +228,9 @@
       "featured": false
     },
     {
-      "id": "dingtalk-bridge",
+      "id": "alma-dingtalk-bridge",
       "name": "DingTalk Bridge",
-      "version": "1.0.0",
+      "version": "1.1.0",
       "description": "Bridge DingTalk bots into Alma as a chat channel: Stream-mode intake drives a full agent turn (tools, skills, project workspace) and posts replies back to DingTalk.",
       "author": {
         "name": "JasonChou",
@@ -248,8 +248,8 @@
         "stream",
         "im"
       ],
-      "repository": "https://github.com/yetone/alma-plugins",
-      "path": "plugins/dingtalk-bridge",
+      "repository": "https://github.com/JasonChou0v0/alma-plugins",
+      "path": "plugins/alma-dingtalk-bridge",
       "downloads": 0,
       "rating": 0,
       "featured": false

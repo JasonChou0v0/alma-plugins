@@ -5,6 +5,9 @@
  * 主动发消息（心跳/通知）需要 appKey/appSecret 换 access_token，
  * 这里实现了 token 缓存与主动发送。
  */
+import * as fs from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
 import type { SendResult } from './types';
 
 export interface DingTalkLogger {
@@ -28,23 +31,77 @@ export class DingTalkClient {
         private readonly logger: DingTalkLogger,
     ) {}
 
+    /* ---------------- 归档 ---------------- */
+
+
+
+    private archiveOutbound(record: Record<string, unknown>): void {
+        try {
+            const dir =
+                process.platform === 'darwin'
+                    ? path.join(os.homedir(), 'Library', 'Logs', 'Alma')
+                    : path.join(os.tmpdir(), 'alma-logs');
+            if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+
+            const day = new Date().toISOString().slice(0, 10);
+            const file = path.join(dir, `dingtalk-payloads-${day}.jsonl`);
+
+            fs.appendFileSync(file, `${JSON.stringify({ at: new Date().toISOString(), ...record })}\n`, { mode: 0o600 });
+            fs.chmodSync(file, 0o600);
+        } catch {
+            /* 归档失败不影响发送 */
+        }
+    }
+
     /* ---------------- 分段 ---------------- */
 
-    /** 按行边界切分，避免把句子切开 */
-    static chunk(text: string, limit = MAX_CHUNK): string[] {
-        if (!text) return [];
-        if (text.length <= limit) return [text];
+    clearToken(): void { this.token = null; this.tokenExpiry = 0; }
 
-        const out: string[] = [];
-        let rest = text;
-        while (rest.length > limit) {
-            let cut = rest.lastIndexOf('\n', limit);
-            if (cut < limit * 0.5) cut = limit;
-            out.push(rest.slice(0, cut));
-            rest = rest.slice(cut).replace(/^\n+/, '');
+    /** consumed 是原始缓冲的字符数；补齐围栏的字符不计入发送游标。 */
+    static chunkParts(text: string, limit = MAX_CHUNK): Array<{ text: string; consumed: number }> {
+        if (!text) return [];
+        if (limit < 32) throw new Error('chunk limit must be >= 32');
+        const out: Array<{ text: string; consumed: number }> = [];
+        let buffer = '', consumed = 0, fence = '', opener = '';
+        const emit = () => {
+            if (!consumed) return;
+            out.push({ text: buffer + (fence ? `\n${fence}` : ''), consumed });
+            buffer = fence ? opener + '\n' : '';
+            consumed = 0;
+        };
+        for (const line of text.match(/[^\n]*\n|[^\n]+$/g) ?? []) {
+            const marker = /^ {0,3}(`{3,}|~{3,})([^\n]*)/.exec(line);
+            if (marker && (marker[1].length > 100 || marker[0].length > limit / 2)) throw new Error('代码围栏标记过长，拒绝不安全切分');
+            let offset = 0;
+            while (offset < line.length) {
+                const reserve = Math.max(fence ? fence.length + 1 : 0, marker ? marker[1].length + 1 : 0);
+                const room = limit - buffer.length - reserve;
+                if (room <= 0) { emit(); continue; }
+                let count = Math.min(room, line.length - offset);
+                if (offset === 0 && line.length > room && consumed && line.length < limit - 128) {
+                    emit(); continue;
+                }
+                // 避免切开 UTF-16 代理对。
+                if (count < line.length - offset && /[\uD800-\uDBFF]/.test(line[offset + count - 1])) count--;
+                if (!count) { emit(); continue; }
+                buffer += line.slice(offset, offset + count);
+                consumed += count;
+                offset += count;
+                if (offset === line.length && marker) {
+                    if (!fence) { fence = marker[1]; opener = marker[0].trim().slice(0, 100); }
+                    else if (marker[1][0] === fence[0] && marker[1].length >= fence.length && !marker[2].trim()) {
+                        fence = ''; opener = '';
+                    }
+                }
+                if (offset < line.length) emit();
+            }
         }
-        if (rest) out.push(rest);
+        emit();
         return out;
+    }
+
+    static chunk(text: string, limit = MAX_CHUNK): string[] {
+        return this.chunkParts(text, limit).map(p => p.text);
     }
 
     /* ---------------- webhook 回复 ---------------- */
@@ -145,6 +202,11 @@ export class DingTalkClient {
      * 所以要降级处理，否则会原样显示 ** 这种符号。
      */
     static toDingTalkMarkdown(text: string): string {
+        const blocks = text.split(/(^ {0,3}(?:`{3,}|~{3,})[^\n]*\n[\s\S]*?^ {0,3}(?:`{3,}|~{3,})[ \t]*$)/gm);
+        return blocks.map((block, i) => i % 2 ? block : (block.trim() ? this.formatProse(block) : block)).join('') || '（没有返回有效内容，请重试）';
+    }
+
+    private static formatProse(text: string): string {
         let out = DingTalkClient.stripLeakedPrompt(text);
 
         /* ATX 标题 -> 钉钉支持 #### 起的标题 */
@@ -198,9 +260,13 @@ export class DingTalkClient {
             },
         };
 
+        /* 出站消息也归档，与入站一一对应，便于排查"发了什么" */
+        this.archiveOutbound({ direction: 'out', target: 'webhook', payload });
+
         try {
             const res = await fetch(webhook, {
                 method: 'POST',
+                signal: AbortSignal.timeout(20_000),
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(payload),
             });
@@ -236,6 +302,7 @@ export class DingTalkClient {
         try {
             const res = await fetch(TOKEN_URL, {
                 method: 'POST',
+                signal: AbortSignal.timeout(20_000),
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ appKey: clientId, appSecret: clientSecret }),
             });
@@ -264,6 +331,7 @@ export class DingTalkClient {
         try {
             const res = await fetch(SEND_URL, {
                 method: 'POST',
+                signal: AbortSignal.timeout(20_000),
                 headers: {
                     'Content-Type': 'application/json',
                     'x-acs-dingtalk-access-token': token,
@@ -294,6 +362,7 @@ export class DingTalkClient {
         try {
             const res = await fetch(GROUP_SEND_URL, {
                 method: 'POST',
+                signal: AbortSignal.timeout(20_000),
                 headers: {
                     'Content-Type': 'application/json',
                     'x-acs-dingtalk-access-token': token,

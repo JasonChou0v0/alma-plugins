@@ -43,6 +43,13 @@ export function createContext(opts = {}) {
     const logs = [];
     const statusBar = { text: '', tooltip: '', shown: false, command: '' };
 
+    /*
+     * 捕获事件处理器与工具定义，供安全测试驱动真实生产代码
+     * （如 tool.willExecute 钩子、dingtalk_notify 工具）。对其它测试无副作用。
+     */
+    const eventHandlers = new Map(); // eventName -> Set<handler>
+    const registeredTools = new Map(); // id -> def
+
     const settingsMap = {};
     const withPrefix = (k) => (k.startsWith('dingtalkBridge.') ? k : `dingtalkBridge.${k}`);
     for (const [k, v] of Object.entries(pluginSettings)) {
@@ -104,7 +111,26 @@ export function createContext(opts = {}) {
                 return { dispose: () => commands.delete(id) };
             },
         },
-        events: { on: () => ({ dispose() {} }), once: () => ({ dispose() {} }) },
+        events: {
+            on: (name, handler) => {
+                if (!eventHandlers.has(name)) eventHandlers.set(name, new Set());
+                eventHandlers.get(name).add(handler);
+                return {
+                    dispose() {
+                        eventHandlers.get(name)?.delete(handler);
+                    },
+                };
+            },
+            once: (name, handler) => {
+                const wrap = (...a) => {
+                    eventHandlers.get(name)?.delete(wrap);
+                    handler(...a);
+                };
+                if (!eventHandlers.has(name)) eventHandlers.set(name, new Set());
+                eventHandlers.get(name).add(wrap);
+                return { dispose() { eventHandlers.get(name)?.delete(wrap); } };
+            },
+        },
         chat: {
             listThreads: async () => [],
             getThread: async () => undefined,
@@ -114,10 +140,15 @@ export function createContext(opts = {}) {
                 throw new Error('chat.createThread 未接线');
             },
         },
-        tools: { register: () => ({ dispose() {} }) },
+        tools: {
+            register: (id, def) => {
+                registeredTools.set(id, def);
+                return { dispose() { registeredTools.delete(id); } };
+            },
+        },
         workspace: {},
         theme: { register: () => ({ dispose() {} }) },
     };
 
-    return { context, storage, commands, notifications, logs, statusBar, settingsMap };
+    return { context, storage, commands, notifications, logs, statusBar, settingsMap, eventHandlers, registeredTools };
 }

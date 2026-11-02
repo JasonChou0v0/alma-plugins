@@ -1,10 +1,14 @@
 /**
  * 桥接核心：钉钉消息 → Alma agent → 钉钉回复
  */
+import * as fs from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
 import { DWClient, TOPIC_ROBOT } from 'dingtalk-stream';
 import type { PluginContext } from 'alma-plugin-api';
 
 import { AlmaApi } from './alma-api';
+import { AuthorizationCommands } from './authorization';
 import { AlmaSocket } from './alma-socket';
 import { DingTalkClient } from './dingtalk-client';
 import type {
@@ -19,6 +23,7 @@ export interface BridgeDeps {
     context: PluginContext;
     config: () => BridgeConfig;
     getBuiltinThreadId?: () => string | undefined;
+    encryptionAvailable?: () => Promise<boolean>;
 }
 
 /** 回合结束后推送的最终文本等 */
@@ -27,6 +32,8 @@ const STORAGE_VER = 2;
 const OVERRIDES_KEY = 'dingtalkWorkspaceOverrides';
 const FLUSH_INTERVAL_MS = 1200;
 const COMMAND_PREFIX = '/';
+/** 回合无活动超过该阈值视为卡死，终结时先 stop 远端再本地收尾（非旧式纯本地 sweep） */
+const STALE_TURN_MS = 15 * 60_000;
 
 export interface BridgeStatus {
     running: boolean;
@@ -44,7 +51,10 @@ export class DingTalkBridge {
     private sessions: Record<string, SessionRecord> = {};
     /** 每个会话的工作区覆盖（/use 设置），独立于插件配置，无需 settings:write */
     private workspaceOverrides: Record<string, string> = {};
-    private queue: Promise<void> = Promise.resolve();
+    private readonly queues = new Map<string, Promise<void>>();
+    private stopping = false;
+    private startEpoch = 0;
+    private readonly threadQueues = new Map<string, Promise<void>>();
     private completedTurns = 0;
 
     private dwClient: DWClient | null = null;
@@ -53,10 +63,21 @@ export class DingTalkBridge {
     private botName: string | undefined;
     /** 机器人自己的 dingtalkId（从 chatbotUserId 学到） */
     private botDingTalkId: string | undefined;
+    /**
+     * 消息缓存：msgId -> 消息摘要。
+     * 当前插件尚未接入引用消息查询接口，先从同一会话的本地缓存还原。
+     */
+    private readonly msgCache = new Map<string, { nick: string; text: string; at: number }>();
+
+    /** 载荷归档目录 */
+    private readonly logDir: string = process.platform === 'darwin'
+        ? path.join(os.homedir(), 'Library', 'Logs', 'Alma')
+        : path.join(os.tmpdir(), 'alma-logs');
     private startedAt: number | null = null;
     private lastMessageAt: number | null = null;
     private lastError: string | null = null;
 
+    private readonly authorization: AuthorizationCommands;
     private readonly api: AlmaApi;
     private readonly dingtalk: DingTalkClient;
     private readonly socket: AlmaSocket;
@@ -64,11 +85,18 @@ export class DingTalkBridge {
     /* 去重缓冲：钉钉会在 60s 内重推未 ACK 的消息 */
     private readonly seenMsgIds = new Map<string, number>();
     /** 正在排队等待处理的线程，防止同一线程堆积 */
-    private readonly queuedThreads = new Set<string>();
+
+    /** 同一 session key 正在 resolveThread 的进行中 Promise，防止并发建线程 */
+    private readonly resolving = new Map<string, Promise<string>>();
+    /** 被「禁用工具」策略约束的线程集合，供 tool.willExecute 钩子核验取消 */
+    private readonly toolsDisabledThreads = new Set<string>();
+    /** 仅从经验证的加密存储加载，禁止使用普通设置作为运行时凭据。 */
+    private secretClientSecret: string | undefined;
 
     constructor(private readonly deps: BridgeDeps) {
         this.ctx = deps.context;
         this.cfg = deps.config;
+        this.authorization = new AuthorizationCommands(this.cfg, this.ctx.settings);
 
         this.api = new AlmaApi(
             () => `http://127.0.0.1:${this.cfg().almaApiPort}`,
@@ -78,7 +106,12 @@ export class DingTalkBridge {
         this.dingtalk = new DingTalkClient(
             () => {
                 const c = this.cfg();
-                return { clientId: c.clientId, clientSecret: c.clientSecret, robotCode: c.robotCode || c.clientId };
+                /* secrets 里的凭据优先于 settings 明文 */
+                return {
+                    clientId: c.clientId,
+                    clientSecret: this.secretClientSecret || '',
+                    robotCode: c.robotCode || c.clientId,
+                };
             },
             this.ctx.logger,
         );
@@ -113,8 +146,11 @@ export class DingTalkBridge {
                 onError: (turn, message) => {
                     turn.finished = true;
                     this.cancelFlush(turn);
+                    // 不确定的远端回合不再复用线程（stop 请求不是完成确认）。
+                    this.invalidateThread(turn.threadId);
                     this.socket.release(turn.threadId);
-                    void this.reply(turn, `❌ 生成失败：${message}`);
+                    this.toolsDisabledThreads.delete(turn.threadId);
+                    void Promise.resolve(turn.flushInFlight).catch(() => {}).then(() => this.reply(turn, `❌ 生成失败：${message}`)).catch(() => {}).finally(() => turn.settled?.());
                 },
             },
         );
@@ -136,21 +172,35 @@ export class DingTalkBridge {
     }
 
     async start(): Promise<void> {
+        this.stopping = false;
+        const epoch = ++this.startEpoch;
         const config = this.cfg();
 
-        if (!config.clientId || !config.clientSecret) {
+        /* 从加密存储加载凭据；旧普通设置只用于迁移，迁移失败则停止启动。 */
+        await this.loadSecretClientSecret(config);
+        if (epoch !== this.startEpoch || this.stopping) return;
+
+        const effectiveSecret = this.secretClientSecret;
+        if (!config.clientId || !effectiveSecret) {
             this.lastError = '未配置 clientId / clientSecret';
-            this.ctx.logger.warn('钉钉凭据未配置，桥接不会启动。请在插件设置里填写 AppKey / AppSecret。');
+            this.ctx.logger.warn('钉钉凭据未配置，桥接不会启动。请配置 AppKey，并执行「钉钉桥接：设置安全密钥」输入 AppSecret。');
             return;
+        }
+
+        if (config.allowedStaffIds.length === 0) {
+            this.ctx.logger.warn(
+                'allowedStaffIds 为空：所有入站消息都会被拒绝（无开放模式）。请在插件设置里配置用户白名单。',
+            );
         }
 
         await this.loadSessions();
         await this.loadWorkspaceOverrides();
+        this.socket.resume();
         void this.socket.connect();
 
         this.dwClient = new DWClient({
             clientId: config.clientId,
-            clientSecret: config.clientSecret,
+            clientSecret: effectiveSecret,
             debug: false,
             keepAlive: true,
         });
@@ -175,7 +225,15 @@ export class DingTalkBridge {
         });
 
         try {
-            await this.dwClient.connect();
+            const client = this.dwClient;
+            let deadline: ReturnType<typeof setTimeout> | undefined;
+            try {
+                await Promise.race([
+                    client.connect(),
+                    new Promise<never>((_, reject) => { deadline = setTimeout(() => reject(new Error('Stream 连接超时')), 30_000); }),
+                ]);
+            } finally { clearTimeout(deadline); }
+            if (epoch !== this.startEpoch || this.stopping) { client.disconnect(); return; }
             this.running = true;
             this.startedAt = Date.now();
             this.lastError = null;
@@ -183,13 +241,17 @@ export class DingTalkBridge {
         } catch (e) {
             this.running = false;
             this.lastError = e instanceof Error ? e.message : String(e);
-            this.ctx.logger.error('钉钉 Stream 连接失败', e);
-            throw e;
+            try { this.dwClient?.disconnect(); } catch {}
+            this.ctx.logger.error('钉钉 Stream 连接失败');
+            throw new Error('钉钉 Stream 连接失败');
         }
     }
 
     async stop(): Promise<void> {
+        this.stopping = true;
+        this.startEpoch += 1;
         this.running = false;
+        this.dingtalk.clearToken();
         try {
             this.dwClient?.disconnect();
         } catch (e) {
@@ -207,6 +269,67 @@ export class DingTalkBridge {
     /* ============================================================ */
     /* 配置与持久化                                                  */
     /* ============================================================ */
+
+    /**
+     * 核验过的 secrets 访问：alma-plugin-api 的 SecretStorage 只有
+     * get/set/delete（键为 string，值必须为 string），没有 keys/clear。
+     * 使用前先做能力探测，绝不调用不存在的方法、绝不存非字符串值。
+     */
+    private get secrets(): { get(k: string): Promise<string | undefined>; set(k: string, v: string): Promise<void>; delete(k: string): Promise<void> } | null {
+        const s = (this.ctx.storage as any)?.secrets;
+        if (s && typeof s.get === 'function' && typeof s.set === 'function' && typeof s.delete === 'function') {
+            return s;
+        }
+        return null;
+    }
+
+    private async requireSecureStorage(): Promise<NonNullable<DingTalkBridge['secrets']>> {
+        const available = this.deps.encryptionAvailable
+            ? await this.deps.encryptionAvailable()
+            : await import('electron').then(m => m.safeStorage.isEncryptionAvailable()).catch(() => false);
+        // 宿主 secrets 在 safeStorage 不可用时会降级成明文，所以必须先拒绝。
+        if (!available || !this.secrets) throw new Error('安全密钥存储不可用，拒绝使用明文凭据');
+        return this.secrets;
+    }
+
+    async loadSecretClientSecret(config: BridgeConfig): Promise<void> {
+        this.secretClientSecret = undefined;
+        const store = await this.requireSecureStorage();
+        const key = config.clientSecretSecretKey?.trim() || 'dingtalk.clientSecret';
+        if (config.clientSecret) {
+            // 迁移：写入并回读成功后才清空旧设置；清空失败则不启动。
+            await store.set(key, config.clientSecret);
+            if (await store.get(key) !== config.clientSecret) throw new Error('密钥迁移校验失败');
+            await this.ctx.settings.update('dingtalkBridge.clientSecret', '');
+            if (this.ctx.settings.get('dingtalkBridge.clientSecret', '')) throw new Error('旧明文设置未清空');
+        }
+        const value = await store.get(key);
+        if (typeof value === 'string' && value) this.secretClientSecret = value;
+    }
+
+    async storeClientSecret(value: string): Promise<boolean> {
+        if (typeof value !== 'string' || !value.trim()) return false;
+        try {
+            const store = await this.requireSecureStorage();
+            const key = this.cfg().clientSecretSecretKey?.trim() || 'dingtalk.clientSecret';
+            await store.set(key, value);
+            if (await store.get(key) !== value) return false;
+            if (this.cfg().clientSecret) await this.ctx.settings.update('dingtalkBridge.clientSecret', '');
+            this.secretClientSecret = value;
+            this.dingtalk.clearToken();
+            return true;
+        } catch {
+            this.ctx.logger.warn('安全密钥保存失败，未启用新凭据');
+            return false;
+        }
+    }
+
+    private invalidateThread(threadId: string): void {
+        for (const [key, session] of Object.entries(this.sessions)) {
+            if (session.threadId === threadId) delete this.sessions[key];
+        }
+        void this.saveSessions();
+    }
 
     private async loadSessions(): Promise<void> {
         try {
@@ -277,22 +400,38 @@ export class DingTalkBridge {
         const config = this.cfg();
         const key = this.sessionKey(chatId, senderId, config.mode);
 
-        const existing = this.sessions[key];
-        if (existing?.threadId) {
-            /* 校验线程是否还在（用户可能手动删了） */
-            try {
-                const threads = await this.api.getThreads();
-                if (threads.some((t) => t.id === existing.threadId)) return existing.threadId;
-                this.ctx.logger.warn('映射的线程已不存在，重新创建', existing.threadId);
-            } catch (e) {
-                /* 查询失败先信任缓存，避免网络抖动导致上下文丢失 */
-                this.ctx.logger.warn('校验线程失败，沿用缓存', e);
-                return existing.threadId;
-            }
-            delete this.sessions[key];
-        }
+        /*
+         * 并发去重：两条消息几乎同时到达时，可能都发现 sessions[key] 为空而各自建线程。
+         * 用「进行中的 Promise」共享同一次创建，保证一个 session key 只建一条线程。
+         */
+        const inflight = this.resolving.get(key);
+        if (inflight) return inflight;
 
-        return this.createThreadFor(key, title);
+        const task = (async (): Promise<string> => {
+            const existing = this.sessions[key];
+            if (existing?.threadId) {
+                /* 校验线程是否还在（用户可能手动删了） */
+                try {
+                    const thread = await this.ctx.chat.getThread(existing.threadId);
+                    if (thread) return existing.threadId;
+                    this.ctx.logger.warn('映射的线程已不存在，重新创建', existing.threadId);
+                } catch (e) {
+                    /* 查询失败先信任缓存，避免网络抖动导致上下文丢失 */
+                    this.ctx.logger.warn('校验线程失败，沿用缓存', e);
+                    return existing.threadId;
+                }
+                delete this.sessions[key];
+            }
+
+            return this.createThreadFor(key, title);
+        })();
+
+        this.resolving.set(key, task);
+        try {
+            return await task;
+        } finally {
+            this.resolving.delete(key);
+        }
     }
 
     private async createThreadFor(key: string, title: string): Promise<string> {
@@ -358,6 +497,7 @@ export class DingTalkBridge {
      * - 找到最后一个句末标点/换行，切到那里（避免把半句话发出去）
      * - 没有边界时，只有攒够 200 字符才强制切
      * - 即使不足 MIN_FLUSH，只要有完整边界也允许发（短回复也要能流式出去）
+     * - 绝不在未闭合的代码围栏（```）中间切断，否则钉钉渲染会错乱
      */
     static takeFlushable(text: string, alreadySent: number): string {
         const pending = text.slice(alreadySent);
@@ -367,17 +507,32 @@ export class DingTalkBridge {
             ch === '\n' || ch === '。' || ch === '！' || ch === '？' ||
             ch === '.' || ch === '!' || ch === '?' || ch === '；' || ch === ';';
 
+        /** 统计「行首三反引号」围栏数量，奇数表示围栏未闭合 */
+        const fenceCount = (s: string): number => {
+            let n = 0;
+            for (const line of s.split('\n')) {
+                if (/^\s*```/.test(line)) n += 1;
+            }
+            return n;
+        };
+
         let cut = -1;
         const floor = Math.max(0, pending.length - 400);
         for (let i = pending.length - 1; i >= floor; i--) {
             if (isBoundary(pending[i])) {
-                cut = i + 1;
+                const candidate = i + 1;
+                /* 落在未闭合围栏内则跳过这个切点，继续往前找 */
+                if (fenceCount(pending.slice(0, candidate)) % 2 === 1) continue;
+                cut = candidate;
                 break;
             }
         }
 
         if (cut > 0) return pending.slice(0, cut);
-        return pending.length >= 200 ? pending : '';
+
+        /* 强切也要避开未闭合围栏：整段还在围栏里就先不发 */
+        if (pending.length >= 200 && fenceCount(pending) % 2 === 0) return pending;
+        return '';
     }
 
     private scheduleFlush(turn: TurnState): void {
@@ -392,23 +547,27 @@ export class DingTalkBridge {
     }
 
     private async doFlush(turn: TurnState): Promise<void> {
-        if (turn.finished) return;
-        /* 钉钉里逐段推送体验差，限制最多 3 段，超出就等最终一次性发 */
-        if ((turn.flushCount ?? 0) >= 3) return;
+        if (turn.finished || turn.flushInFlight || (turn.flushCount ?? 0) >= 3) return;
         const piece = DingTalkBridge.takeFlushable(turn.text, turn.flushedChars ?? 0);
         if (!piece) return;
         turn.flushCount = (turn.flushCount ?? 0) + 1;
-
-        turn.flushedChars = (turn.flushedChars ?? 0) + piece.length;
         turn.flushStartedAt = Date.now();
+        const sending = this.sendBuffered(turn, piece);
+        turn.flushInFlight = sending;
+        try { await sending; } finally { turn.flushInFlight = undefined; }
+    }
 
-        const result = await this.dingtalk.replyWebhook(turn.webhook, piece);
-        if (result.ok) {
+    private async sendBuffered(turn: TurnState, text: string): Promise<void> {
+        for (const piece of DingTalkClient.chunkParts(text)) {
+            const result = await this.dingtalk.replyWebhook(turn.webhook, piece.text);
+            if (!result.ok) {
+                turn.deliveryFailed = true;
+                this.lastError = '回复部分或全部发送失败，已保留成功发送游标';
+                return;
+            }
+            turn.flushedChars = (turn.flushedChars ?? 0) + piece.consumed;
             turn.streamed = true;
-        } else {
-            /* 推送失败就回退，保证最终一次性发全文 */
-            turn.flushedChars = 0;
-            turn.streamed = false;
+            turn.deliveryFailed = false;
         }
     }
 
@@ -426,13 +585,20 @@ export class DingTalkBridge {
     private async finalizeTurn(turn: TurnState): Promise<void> {
         try {
             this.cancelFlush(turn);
+            await turn.flushInFlight;
 
-            const full = await this.readFinalText(turn);
+            /*
+             * 单一权威缓冲：以本轮累计的 turn.text 为准。
+             * 不再回读数据库消息——那会造成「流式用 turn.text、最终用 DB」两套来源，
+             * 既可能掩饰增量未完成，也与「单一权威缓冲」相悖。
+             * 若 WS 丢了增量，这里如实发出（可能偏短），不掩盖未完成。
+             */
+            const full = turn.text;
             const alreadySent = turn.streamed ? (turn.flushedChars ?? 0) : 0;
-            const remainder = full.slice(alreadySent).trim();
+            const remainder = full.slice(alreadySent);
 
             if (remainder) {
-                await this.reply(turn, remainder);
+                await this.sendBuffered(turn, remainder);
             } else if (!turn.streamed) {
                 await this.reply(turn, '（本轮没有产生文本回复）');
             }
@@ -441,31 +607,9 @@ export class DingTalkBridge {
             await this.reply(turn, `❌ 收尾异常：${e instanceof Error ? e.message : String(e)}`);
         } finally {
             this.socket.release(turn.threadId);
+            this.toolsDisabledThreads.delete(turn.threadId);
             this.completedTurns += 1;
-        }
-    }
-
-    /** 回读数据库里的最终消息，兜住增量丢字 */
-    private async readFinalText(turn: TurnState): Promise<string> {
-        if (!turn.assistantMessageId) return turn.text.trim();
-        try {
-            const messages = await this.api.getMessages(turn.threadId);
-            const target = messages.find((m: any) => {
-                const id = m?.id ?? m?.message?.id;
-                return id && String(id).includes(String(turn.assistantMessageId));
-            });
-            if (!target) return turn.text.trim();
-
-            const parts = target?.message?.parts ?? target?.parts ?? [];
-            const text = parts
-                .filter((p: any) => p?.type === 'text' && typeof p.text === 'string')
-                .map((p: any) => p.text)
-                .join('')
-                .trim();
-            return text || turn.text.trim();
-        } catch (e) {
-            this.ctx.logger.warn('回读最终消息失败，使用累计文本', e);
-            return turn.text.trim();
+            turn.settled?.();
         }
     }
 
@@ -474,12 +618,7 @@ export class DingTalkBridge {
     /* ============================================================ */
 
     private async dispatchDownstream(downstream: any): Promise<void> {
-        const ac = new AbortController();
-        try {
-            await this.handleIncoming(downstream);
-        } finally {
-            ac.abort();
-        }
+        await this.handleIncoming(downstream);
     }
 
     async handleIncoming(downstream: any): Promise<void> {
@@ -505,8 +644,21 @@ export class DingTalkBridge {
                 ` botCorp=${payload?.chatbotCorpId || '-'}` +
                 ` webhook=${payload?.sessionWebhook ? 'ok' : 'MISSING'}` +
                 ` atUsers=${JSON.stringify(payload?.atUsers ?? null).slice(0, 220)}` +
-                ` botUserId=${payload?.chatbotUserId || '-'}`,
+                ` botUserId=${payload?.chatbotUserId || '-'}` +
+                ` originalMsgId=${payload?.originalMsgId || '-'}` +
+                ` isReply=${payload?.content?.isReplyMsg ?? '-'}` +
+                ` convType=${payload?.conversationType || '-'}` +
+                ` convTitle=${payload?.conversationTitle || '-'}`,
         );
+
+        /*
+         * 全量保存原始载荷。
+         * 钉钉返回的字段随场景变化（群聊/单聊/引用/跨企业各不相同），
+         * 先原样落盘，需要时再分析，避免猜字段名。
+         */
+        if (this.cfg().logRawPayload) {
+            this.archivePayload(payload, downstream);
+        }
 
         const chatId = payload?.conversationId;
         /* 跨企业用户可能没有 senderStaffId，用 senderId 兜底 */
@@ -565,14 +717,61 @@ export class DingTalkBridge {
         }
 
         const config = this.cfg();
-        if (
-            config.allowedStaffIds.length > 0 &&
-            !config.allowedStaffIds.includes(senderId) &&
-            !senderId.startsWith('nick:')
-        ) {
+        if (!['1', '2'].includes(String(payload.conversationType))) {
+            this.ctx.logger.warn('未知会话类型，拒绝执行');
+            return;
+        }
+        const isGroup = String(payload.conversationType) === '2';
+
+        /*
+         * 访问控制（覆盖所有入站，含 /help、/status 等命令——命令一律先鉴权）：
+         * - nick: 占位 ID 永不可授权：昵称可伪造，不是可信身份，即便被写进白名单也拒；
+         * - 用户白名单 allowedStaffIds 为空 → 拒绝（不再有"开放模式"）；
+         * - 用户不在白名单 → 拒绝；
+         * - 群白名单 allowedConversationIds：群聊必须在名单内，空则拒绝所有群；
+         *   单聊不受群白名单约束（仍受用户白名单约束）。
+         * 这里只做"是否允许进入"；/use、/new 的管理员鉴权在 runCommand 里做。
+         */
+        if (senderId.startsWith('nick:')) {
+            this.ctx.logger.info(`拒绝不可信 nick: 占位 ID ${senderId}`);
+            await this.dingtalk.replyWebhook(webhook, '⛔ 无法核实你的身份（缺少可信 staffId），已拒绝。');
+            return;
+        }
+
+        if (config.allowedStaffIds.length === 0) {
+            this.ctx.logger.warn('allowedStaffIds 为空，拒绝所有入站（无开放模式）');
+            await this.dingtalk.replyWebhook(webhook, '⛔ 未配置用户白名单，机器人未开放使用。');
+            return;
+        }
+
+        if (!config.allowedStaffIds.includes(senderId)) {
             this.ctx.logger.info(`拒绝未授权用户 ${senderId}`);
             await this.dingtalk.replyWebhook(webhook, '⛔ 你没有使用这个机器人的权限。');
             return;
+        }
+
+        // 仅授权管理命令允许特殊入口：已授权管理员可以授权当前未开放群。
+        // run() 再次核验管理员和用户白名单；不会进入 agent 或改变工具策略。
+        const authText = this.extractText(payload).replace(/^[@\s,，:：]+/, '');
+        const authMatch = authText.match(/^\/(allow|deny|access)(?:\s+([\s\S]*))?$/i);
+        const authCommand = authMatch?.[1].toLowerCase() ?? '';
+        if (authMatch && AuthorizationCommands.isCommand(authCommand)) {
+            const result = await this.authorization.run(authCommand, authMatch[2] ?? '', senderId, payload);
+            await this.dingtalk.replyWebhook(webhook, result);
+            return;
+        }
+
+        if (isGroup) {
+            if (config.allowedConversationIds.length === 0) {
+                this.ctx.logger.info(`拒绝群聊 ${chatId}：allowedConversationIds 为空`);
+                await this.dingtalk.replyWebhook(webhook, '⛔ 未配置群白名单，群聊未开放使用。');
+                return;
+            }
+            if (!config.allowedConversationIds.includes(chatId)) {
+                this.ctx.logger.info(`拒绝未授权群聊 ${chatId}`);
+                await this.dingtalk.replyWebhook(webhook, '⛔ 此群未在白名单中，无法使用。');
+                return;
+            }
         }
 
         const text = this.extractText(payload);
@@ -583,6 +782,20 @@ export class DingTalkBridge {
 
         this.lastMessageAt = Date.now();
 
+        /* 缓存本条消息，供后续被引用时还原 */
+        if (payload.msgId) {
+            this.msgCache.set(`${chatId}:${payload.msgId}`, {
+                nick: payload.senderNick || senderId,
+                text: this.extractText(payload).slice(0, 500),
+                at: Date.now(),
+            });
+            /* 只保留最近 500 条，防止内存膨胀 */
+            if (this.msgCache.size > 500) {
+                const oldest = [...this.msgCache.entries()].sort((a, b) => a[1].at - b[1].at)[0];
+                if (oldest) this.msgCache.delete(oldest[0]);
+            }
+        }
+
         /* 允许前面残留 @ 或标点，命令判定放宽 */
         const cmdProbe = text.replace(/^[@\s,，:：]+/, '');
         if (cmdProbe.startsWith(COMMAND_PREFIX)) {
@@ -590,43 +803,93 @@ export class DingTalkBridge {
             if (m) {
                 const cmd = m[1].toLowerCase();
                 this.ctx.logger.info(`执行命令 /${cmd}（来自 ${senderId}）`);
-                await this.runCommand(cmd, m[2] ?? '', chatId, senderId, webhook);
+                if (cmd === 'use' || cmd === 'new') {
+                    const commandKey = this.sessionKey(chatId, senderId, config.mode);
+                    const previous = this.queues.get(commandKey) ?? Promise.resolve();
+                    let unlock!: () => void;
+                    const gate = new Promise<void>(r => { unlock = r; });
+                    this.queues.set(commandKey, gate);
+                    await previous;
+                    try {
+                        const current = this.cfg();
+                        if (!this.stopping && current.allowedStaffIds.includes(senderId) &&
+                            (!isGroup || current.allowedConversationIds.includes(chatId))) {
+                            await this.runCommand(cmd, m[2] ?? '', chatId, senderId, webhook);
+                        }
+                    } finally {
+                        unlock();
+                        if (this.queues.get(commandKey) === gate) this.queues.delete(commandKey);
+                    }
+                } else await this.runCommand(cmd, m[2] ?? '', chatId, senderId, webhook);
                 this.ctx.logger.info(`命令 /${cmd} 处理完毕`);
                 return;
             }
         }
 
-        /* 串行化：同一时刻只处理一条，避免并发写同一线程 */
-        const previous = this.queue;
+        const title =
+            payload.conversationTitle ??
+            (payload.conversationType === '1' ? '钉钉单聊' : `钉钉群 ${chatId.slice(0, 8)}`);
+
+        /*
+         * 群聊（conversationType=2）工具策略。
+         * 不能仅靠 ephemeralContext 提示词约束工具——提示词不是权限边界。
+         * - refuse（默认，唯一安全选项）：拒绝群 agent 任务并解释，不提交 generate_response。
+         *   无法经核验确认内部 WS 回合会触发插件 tool.willExecute 钩子，故默认拒绝。
+         * - fullTools：管理员明确接受风险，保留工具。
+         * 旧配置里的 noTools 已在 readConfig 映射为 refuse（钩子在内部 WS 路径是否生效无法确认，
+         * 不能当作安全选项）；tool.willExecute 钩子仍注册为不可靠的纵深防御。
+         * 该约束对所有发送人一视同仁，管理员也不绕过。
+         */
+        const policy = config.groupAgentPolicy;
+        if (isGroup && policy !== 'fullTools') {
+            this.ctx.logger.info(`拒绝群 agent 任务（policy=refuse, conv=${chatId}, sender=${senderId}）`);
+            await this.dingtalk.replyWebhook(
+                webhook,
+                [
+                    '⛔ 群聊默认不驱动带工具的 agent 任务。',
+                    '',
+                    '原因：无法经核验确认内部 agent 回合会强制禁用本地工具，',
+                    '直接在群里跑完整 agent 等于让群内任何人触发本机文件读写/命令执行。',
+                    '',
+                    '如需在群里跑完整 agent，管理员可把 groupAgentPolicy 显式设为 fullTools',
+                    '（接受全部风险，保留工具）。曾经的 noTools 不再作为安全选项：它依赖的',
+                    '宿主 tool.willExecute 钩子在内部 WS 回合是否触发无法确认，不能保证禁用工具。',
+                    '私聊（单聊）不受此限制。',
+                ].join('\n'),
+            );
+            return;
+        }
+
+        this.ctx.logger.info(`对话消息（${senderId}）: ${text.slice(0, 60)}`);
+
+        // sessionKey 在建线程前锁定；同一键只创建一个线程、同一线程只运行一轮。
+        // 不同键独立，等待生成结束或网络回复时不阻塞其他群。
+        const key = this.sessionKey(chatId, senderId, config.mode);
+        const previous = this.queues.get(key) ?? Promise.resolve();
+        const queued = this.queues.has(key);
         let release!: () => void;
-        this.queue = new Promise<void>((r) => (release = r));
-        await previous.catch(() => undefined);
-
+        const gate = new Promise<void>(r => { release = r; });
+        this.queues.set(key, gate);
+        if (queued) void this.dingtalk.replyWebhook(webhook, '⏳ 已排队，上一条结束后继续处理。').catch(() => {});
+        await previous;
+        let threadIdLocked: string | undefined;
+        let threadGate: Promise<void> | undefined;
+        let releaseThread: (() => void) | undefined;
         try {
-            const title =
-                payload.conversationTitle ??
-                (payload.conversationType === '1' ? '钉钉单聊' : `钉钉群 ${chatId.slice(0, 8)}`);
-
-            this.ctx.logger.info(`对话消息（${senderId}）: ${text.slice(0, 60)}`);
-            const threadId = await this.resolveThread(chatId, senderId, title);
-
-            /*
-             * 上一轮还在跑时不要丢弃这条消息，而是排队等它结束再处理。
-             * 原来直接 return 会导致用户的消息彻底失踪。
-             */
-            if (this.socket.isRunning(threadId) || this.queuedThreads.has(threadId)) {
-                await this.dingtalk.replyWebhook(webhook, '⏳ 上一条还在处理，已排队，稍后回复。');
-                this.queuedThreads.add(threadId);
-                try {
-                    await this.waitForThreadIdle(threadId);
-                    /* 排到队了，等前面那轮彻底释放（含队列里的） */
-                    await this.waitForQueueDrain(threadId);
-                } finally {
-                    this.queuedThreads.delete(threadId);
-                }
-                this.ctx.logger.info(`线程 ${threadId} 空闲，开始处理排队的消息`);
+            if (this.stopping) throw new Error('桥接已停止，本条未执行，请稍后重试');
+            // 排队期间权限可能变更，执行前再校验一次。
+            const live = this.cfg();
+            if (!live.allowedStaffIds.includes(senderId) ||
+                (isGroup && (!(live.allowedConversationIds ?? []).includes(chatId) || live.groupAgentPolicy !== 'fullTools'))) {
+                throw new Error('排队期间权限已变更，本条未执行');
             }
-
+            const threadId = await this.resolveThread(chatId, senderId, title);
+            threadIdLocked = threadId;
+            const priorThread = this.threadQueues.get(threadId) ?? Promise.resolve();
+            threadGate = new Promise<void>(r => { releaseThread = r; });
+            this.threadQueues.set(threadId, threadGate);
+            await priorThread;
+            if (this.stopping) throw new Error('桥接已停止');
             const model = await this.api.resolveModel(config.defaultModel);
             const turn: TurnState = {
                 threadId,
@@ -640,21 +903,37 @@ export class DingTalkBridge {
                 lastActivity: Date.now(),
                 finished: false,
             };
+
+            /*
+             * 引用消息：从本地缓存还原被引用的那条内容。
+             * 注意：缓存的 nick 来自历史消息的 senderNick（可伪造），故在
+             * ephemeralContext 里会标 authorTrusted=false；这里只透传原文。
+             */
+            const quoted = this.resolveQuotedMessage(payload);
+
+            const completed = new Promise<void>(resolve => { turn.settled = resolve; });
             await this.socket.submit(turn, model, text, {
                 nick: payload.senderNick,
                 staffId: senderId,
                 chatTitle: payload.conversationTitle,
                 mentions: this.extractMentionedPeople(payload),
+                quoted,
             });
             this.ctx.logger.info(
-                `已提交到线程 ${threadId}，模型 ${model}，发送人 ${payload.senderNick || senderId}`,
+                `已提交到线程 ${threadId}，模型 ${model}`,
             );
+            await completed;
         } catch (e) {
+            const failedId = this.sessions[key]?.threadId;
+            if (failedId) this.invalidateThread(failedId);
             this.ctx.logger.error('处理消息失败', e);
             this.lastError = e instanceof Error ? e.message : String(e);
             await this.dingtalk.replyWebhook(webhook, `❌ 处理失败：${this.lastError}`);
         } finally {
+            releaseThread?.();
+            if (threadIdLocked && this.threadQueues.get(threadIdLocked) === threadGate) this.threadQueues.delete(threadIdLocked);
             release();
+            if (this.queues.get(key) === gate) this.queues.delete(key);
         }
     }
 
@@ -665,25 +944,47 @@ export class DingTalkBridge {
      * （text 类型通常是 "@豆豆 /help"，richText 里是 "@豆豆@1234 /help"）。
      * 不剥掉的话，`text.startsWith('/')` 永远不成立，所有命令都会失效。
      */
-    /** 等待队列中该线程的排在前面请求处理完 */
-    private async waitForQueueDrain(threadId: string, timeoutMs = 10 * 60_000): Promise<void> {
-        const start = Date.now();
-        while (this.socket.isRunning(threadId)) {
-            if (Date.now() - start > timeoutMs) return;
-            await new Promise((r) => setTimeout(r, 500));
+    /**
+     * 把原始载荷完整写入归档文件。
+     *
+     * 按天分文件：~/Library/Logs/Alma/dingtalk-payloads-YYYY-MM-DD.jsonl
+     * 每行一条 JSON，方便 grep / jq / 看板读取。
+     */
+    private archivePayload(payload: any, downstream: any): void {
+        try {
+            const dir = this.logDir;
+            if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+
+            const day = new Date().toISOString().slice(0, 10);
+            const file = path.join(dir, `dingtalk-payloads-${day}.jsonl`);
+
+            const record = {
+                receivedAt: new Date().toISOString(),
+                headers: downstream?.headers ?? null,
+                payload,
+            };
+
+            fs.appendFileSync(file, `${JSON.stringify(record)}\n`, { mode: 0o600 });
+            fs.chmodSync(file, 0o600);
+        } catch (e) {
+            this.ctx.logger.warn('归档原始载荷失败', e);
         }
     }
 
-    /** 等待某个线程的生成结束（带超时，避免无限阻塞） */
-    private async waitForThreadIdle(threadId: string, timeoutMs = 10 * 60_000): Promise<void> {
-        const start = Date.now();
-        while (this.socket.isRunning(threadId)) {
-            if (Date.now() - start > timeoutMs) {
-                this.ctx.logger.warn(`等待线程 ${threadId} 空闲超时，强行继续`);
-                return;
-            }
-            await new Promise((r) => setTimeout(r, 500));
-        }
+    /**
+     * 还原被引用的消息。
+     *
+     * 当前插件只使用载荷里的 originalMsgId，未接入远端引用查询，
+     * 所以从本地缓存里找。缓存未命中就只标注"引用了但内容不可知"。
+     */
+    private resolveQuotedMessage(payload: DingTalkRobotMessage): { nick: string; text: string } | null {
+        const quotedId = payload.originalMsgId;
+        if (!quotedId) return null;
+
+        const cached = this.msgCache.get(`${payload.conversationId}:${quotedId}`);
+        if (cached) return { nick: cached.nick, text: cached.text };
+
+        return { nick: '', text: '' };
     }
 
     private extractText(payload: DingTalkRobotMessage): string {
@@ -744,11 +1045,20 @@ export class DingTalkBridge {
     private extractMentionedPeople(payload: DingTalkRobotMessage): Array<{ name: string; dintalkId?: string }> {
         const botId = payload.chatbotUserId;
         const atUsers = payload.atUsers ?? [];
-        const botName = this.botName;
 
         /*
-         * 实测：钉钉只把「机器人自己」放进 atUsers，且常常没有 name，只有 dingtalkId。
-         * 所以 atUsers 基本拿不到"被 @ 的其他人"，必须从文本解析。
+         * 机器人自己的昵称：钉钉不给，只能从场景推断。
+         * 优先用配置的 robotName；否则取 atUsers 里 dingtalkId === chatbotUserId 那一项的 name。
+         */
+        let botName = this.botName || this.cfg().robotName || undefined;
+        if (!botName && botId) {
+            const self = atUsers.find((u) => u.dingtalkId === botId && u.name);
+            if (self?.name) botName = this.botName = self.name;
+        }
+
+        /*
+         * 部分已观察消息的 atUsers 仅含机器人且缺少 name，不能据此概括所有场景。
+         * 优先使用有名称的结构化提及，文本解析作为展示信息补充。
          */
         const curated = atUsers
             .filter((u) => {
@@ -801,6 +1111,19 @@ export class DingTalkBridge {
         const config = this.cfg();
         const reply = (t: string, title?: string) => this.dingtalk.replyWebhook(webhook, t, title);
 
+        /*
+         * 管理员命令鉴权：/use、/new 仅显式 adminStaffIds 可用。
+         * 仍受上游用户白名单与群白名单约束（已在 handleIncoming 入站鉴权里完成）。
+         * adminStaffIds 为空 → 无人可用这两个命令（不把 allowedStaffIds 隐式当管理员）。
+         */
+        if (cmd === 'use' || cmd === 'new') {
+            if (config.adminStaffIds.length === 0 || !config.adminStaffIds.includes(senderId)) {
+                this.ctx.logger.info(`拒绝非管理员 ${senderId} 执行 /${cmd}`);
+                await reply('⛔ 该命令仅限管理员使用。');
+                return;
+            }
+        }
+
         try {
             switch (cmd) {
                 case 'help':
@@ -820,6 +1143,12 @@ export class DingTalkBridge {
                             '**工作区**',
                             '- `/ws` 列出可绑定的本地项目',
                             '- `/use <id>` 切换当前会话绑定的工作区',
+                            '',
+                            '**授权管理（仅管理员）**',
+                            '- `/allow @用户` / `/deny @用户` 授权或撤销用户（需要钉钉返回真实 staffId）',
+                            '- `/allow user <ID>` / `/deny user <ID>` 按真实 ID 操作',
+                            '- `/allow group` / `/deny group` 授权或撤销当前群',
+                            '- `/access` 查看白名单；管理员和工具策略仅在本机修改',
                             '',
                             '**说明**',
                             '- 群里所有人共用一条会话，但会区分发言人',
@@ -919,19 +1248,83 @@ export class DingTalkBridge {
     /* 主动推送                                                      */
     /* ============================================================ */
 
-    /** 向某个钉钉用户主动发消息（需要能换 token） */
-    async notify(staffId: string, text: string): Promise<boolean> {
-        const result = await this.dingtalk.sendToUser(staffId, text);
-        if (!result.ok) this.ctx.logger.warn('主动推送失败', result.error);
-        return result.ok;
+    /**
+     * AI 工具 dingtalk_notify 的鉴权入口。
+     *
+     * 防绕过：
+     * - 收件人必须在显式用户白名单里，不能向任意 staffId 发信；
+     * - 调用线程若被「禁用工具」标记约束，拒绝发信（纵深防御，防绕过）；
+     * - 文本长度受限，避免被当成无界广播通道。
+     */
+    async notify(
+        staffId: string,
+        text: string,
+        options?: { threadId?: string },
+    ): Promise<{ ok: boolean; error?: string }> {
+        const config = this.cfg();
+        const recipient = String(staffId ?? '').trim();
+        const body = String(text ?? '');
+
+        if (!recipient) return { ok: false, error: '缺少 staffId' };
+        if (!body) return { ok: false, error: '缺少消息内容' };
+        if (body.length > 4000) return { ok: false, error: '消息过长（>4000）' };
+
+        /*
+         * 只允许白名单里的真实收件人（防 send helper 旁路）：
+         * - nick: 占位 ID 永不可授权（不是可信 staffId，sendToUser 也发不出去）；
+         * - 白名单为空 → 拒绝（无开放模式）；
+         * - 不再用 knownSenders() 兜底——那会把任何发过消息的人（含未授权占位 ID）
+         *   放进来，构成主动发信旁路。
+         */
+        if (recipient.startsWith('nick:')) {
+            this.ctx.logger.warn(`notify 拒绝不可信 nick: 收件人: ${recipient}`);
+            return { ok: false, error: '收件人为不可信 nick: 占位 ID，已拒绝' };
+        }
+        if (config.allowedStaffIds.length === 0 || !config.allowedStaffIds.includes(recipient)) {
+            this.ctx.logger.warn(`notify 拒绝向未授权收件人发信: ${recipient}`);
+            return { ok: false, error: `收件人 ${recipient} 不在白名单中，已拒绝（防绕过）` };
+        }
+
+        if (options?.threadId && this.toolsDisabledThreads.has(options.threadId)) {
+            this.ctx.logger.warn(`notify 拒绝在禁用工具的线程 ${options.threadId} 里发信`);
+            return { ok: false, error: '当前会话工具被禁用，不允许主动发信' };
+        }
+
+        const result = await this.dingtalk.sendToUser(recipient, body);
+        if (!result.ok) {
+            this.ctx.logger.warn('主动推送失败', result.error);
+            return { ok: false, error: result.error };
+        }
+        return { ok: true };
     }
 
-    /** 获取所有已知的钉钉用户（用于广播） */
+    /** 获取所有已知的钉钉用户（用于广播/notify 白名单） */
     knownSenders(): string[] {
         return Array.from(new Set(Object.keys(this.sessions).map((k) => k.split('::')[1] ?? k)));
     }
 
     getCompletedTurns(): number {
         return this.completedTurns;
+    }
+
+    /**
+     * 终结卡住的回合（连接未断、但 agent 长时间无活动）。
+     *
+     * 取代旧的危险 sweep：旧 sweep 只删本地 turns 让远端继续跑，造成重叠并掩盖失败。
+     * 这里委托 socket.terminateStaleTurns，对每个超阈值的回合先发 stop_generation
+     * 取消远端，再走 onError 回复用户并释放线程——stop/cancel 且可告知，非本地静默清理。
+     */
+    sweepStaleTurns(): number {
+        return this.socket.terminateStaleTurns(STALE_TURN_MS);
+    }
+
+    /** 供宿主 tool.willExecute 钩子核验：该线程是否被策略禁用工具 */
+    isToolsDisabledForThread(threadId: string): boolean {
+        return this.toolsDisabledThreads.has(threadId);
+    }
+
+    /** 释放某线程的工具禁用标记（测试/收尾用） */
+    clearToolsDisabled(threadId: string): void {
+        this.toolsDisabledThreads.delete(threadId);
     }
 }

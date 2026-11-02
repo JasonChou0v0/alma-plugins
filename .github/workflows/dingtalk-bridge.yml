@@ -1,0 +1,39 @@
+name: DingTalk Bridge
+on:
+  push:
+  pull_request:
+permissions:
+  contents: read
+concurrency:
+  group: dingtalk-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: '1.3.14'
+      - name: Locate plugin
+        id: plugin
+        shell: bash
+        run: |
+          if [ -f plugins/alma-dingtalk-bridge/package.json ]; then
+            echo 'dir=plugins/alma-dingtalk-bridge' >> "$GITHUB_OUTPUT"
+          elif [ -f plugins/dingtalk-bridge/package.json ]; then
+            echo 'dir=plugins/dingtalk-bridge' >> "$GITHUB_OUTPUT"
+          elif [ -f alma-dingtalk-bridge/package.json ]; then
+            echo 'dir=alma-dingtalk-bridge' >> "$GITHUB_OUTPUT"
+          else
+            echo 'dir=.' >> "$GITHUB_OUTPUT"
+          fi
+      - name: Restore exact locked dependencies
+        working-directory: ${{ steps.plugin.outputs.dir }}
+        run: bun install --frozen-lockfile --ignore-scripts
+      - name: Offline production-path tests
+        working-directory: ${{ steps.plugin.outputs.dir }}
+        run: bun run test:offline
+      - name: Compare committed bundle to source
+        working-directory: ${{ steps.plugin.outputs.dir }}
+        run: bun run check:bundle

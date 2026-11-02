@@ -17,7 +17,7 @@ import type { PluginContext, PluginActivation } from 'alma-plugin-api';
 
 import { DingTalkBridge } from './lib/bridge';
 import { createLogger } from './lib/log';
-import type { BridgeConfig, SessionMode } from './lib/types';
+import type { BridgeConfig, GroupAgentPolicy, SessionMode } from './lib/types';
 
 const STATUS_BAR_ID = 'alma-dingtalk-bridge.status';
 
@@ -43,13 +43,28 @@ export async function activate(context: PluginContext): Promise<PluginActivation
         };
 
         const rawStaff = String(get<string>('allowedStaffIds', '') ?? '');
+        const rawConv = String(get<string>('allowedConversationIds', '') ?? '');
+        const rawAdmin = String(get<string>('adminStaffIds', '') ?? '');
         const mode = String(get<string>('mode', 'per-chat')) as SessionMode;
+        const rawPolicy = String(get<string>('groupAgentPolicy', 'refuse')) as GroupAgentPolicy;
+        /*
+         * noTools 已不再是可选安全策略：宿主 tool.willExecute 钩子在内部 WS
+         * generate_response 回合是否触发无法从插件侧确认，故把旧配置里的 noTools
+         * 当作 refuse 处理，避免管理员误以为「禁了工具」而实际未必生效。
+         */
+        if (rawPolicy === 'noTools') {
+            logger.warn(
+                'groupAgentPolicy=noTools 已不再作为安全选项（钩子在内部 WS 回合是否触发未确认），按 refuse 处理。' +
+                    '如需群 agent 回合，请显式设为 fullTools 并接受全部风险。',
+            );
+        }
 
         return {
             almaApiPort: Number(get<number>('almaApiPort', 23001)) || 23001,
             clientId: String(get<string>('clientId', '') ?? '').trim(),
             clientSecret: String(get<string>('clientSecret', '') ?? '').trim(),
             robotCode: String(get<string>('robotCode', '') ?? '').trim(),
+            robotName: String(get<string>('robotName', '豆豆') ?? '豆豆').trim(),
             defaultModel: String(get<string>('defaultModel', '') ?? '').trim(),
             workspaceId: String(get<string>('workspaceId', '') ?? '').trim(),
             mode: mode === 'per-sender' || mode === 'single' ? mode : 'per-chat',
@@ -57,8 +72,19 @@ export async function activate(context: PluginContext): Promise<PluginActivation
                 .split(',')
                 .map((s) => s.trim())
                 .filter(Boolean),
-            streamingReply: Boolean(get<boolean>('streamingReply', true)),
+            allowedConversationIds: rawConv
+                .split(',')
+                .map((s) => s.trim())
+                .filter(Boolean),
+            adminStaffIds: rawAdmin
+                .split(',')
+                .map((s) => s.trim())
+                .filter(Boolean),
+            streamingReply: Boolean(get<boolean>('streamingReply', false)),
             replyOnToolUse: Boolean(get<boolean>('replyOnToolUse', true)),
+            logRawPayload: Boolean(get<boolean>('logRawPayload', true)),
+            groupAgentPolicy: rawPolicy === 'fullTools' ? 'fullTools' : 'refuse',
+            clientSecretSecretKey: String(get<string>('clientSecretSecretKey', 'dingtalk.clientSecret') ?? 'dingtalk.clientSecret').trim(),
         };
     };
 
@@ -113,9 +139,30 @@ export async function activate(context: PluginContext): Promise<PluginActivation
     /* 状态栏定时刷新（会话数/连接态会变） */
     const statusTimer = setInterval(refreshStatusBar, 5000);
 
+    /*
+     * 定期终结卡住但连接未断的回合：先 stop 远端生成再本地收尾，
+     * 避免 isRunning 永久为 true 把后续消息堵死。这是「stop/cancel 且可告知」的
+     * 正确终结，不是旧式「删本地让远端继续跑」的危险 sweep。
+     */
+    const sweepTimer = setInterval(() => {
+        const n = bridge.sweepStaleTurns();
+        if (n > 0) logger.warn(`终结了 ${n} 个卡住的回合（已 stop 远端并通知用户）`);
+    }, 60_000);
+
     /* ---------------- 命令 ---------------- */
 
     const disposables = [
+        commands.register('dingtalkBridge.setSecret', async () => {
+            const secret = await ui.showInputBox({ title: '设置钉钉 AppSecret', password: true,
+                prompt: '仅写入系统加密存储，不写入插件普通设置。' });
+            if (!secret) return;
+            if (!await bridge.storeClientSecret(secret)) {
+                ui.showNotification('密钥未保存：安全存储或迁移校验失败', { type: 'error' });
+                return;
+            }
+            await requestStart(true);
+            ui.showNotification('密钥已安全保存，连接状态请查看状态栏', { type: 'info' });
+        }),
         commands.register('dingtalkBridge.status', async () => {
             refreshStatusBar();
             const status = bridge.getStatus();
@@ -134,7 +181,7 @@ export async function activate(context: PluginContext): Promise<PluginActivation
 
         commands.register('dingtalkBridge.restart', async () => {
             logger.info('正在重连钉钉桥接…');
-            await bridge.restart();
+            await requestStart(true);
             refreshStatusBar();
             const status = bridge.getStatus();
             ui.showNotification(
@@ -161,7 +208,7 @@ export async function activate(context: PluginContext): Promise<PluginActivation
                 '',
                 `日志：${logger.filePath()}`,
                 '',
-                '提示：改完配置后点「重连」或重新拨一次插件开关即可生效。',
+                '提示：凭据与端口配置变化会自动重连，启动失败会退避重试。',
             ].filter(Boolean);
             ui.showNotification(lines.join('\n'), { type: 'info', duration: 8000 });
         }),
@@ -180,42 +227,82 @@ export async function activate(context: PluginContext): Promise<PluginActivation
             },
             required: ['staffId', 'message'],
         } as const,
-        execute: async (params: any) => {
+        /*
+         * 第二个参数是宿主核验过的 ToolContext = { threadId, messageId, abortSignal? }。
+         * 把 threadId 透传给 notify，使「禁用工具」线程里的主动发信也被拒绝（防绕过）。
+         */
+        execute: async (params: any, toolCtx: any) => {
             const { staffId, message } = params as { staffId: string; message: string };
-            const ok = await bridge.notify(staffId, message);
-            return ok
+            const threadId = typeof toolCtx?.threadId === 'string' ? toolCtx.threadId : undefined;
+            const ok = await bridge.notify(staffId, message, threadId ? { threadId } : undefined);
+            return ok.ok
                 ? { success: true, message: `已发送给 ${staffId}` }
                 : { success: false, error: '发送失败，请检查凭据与 staffId' };
         },
     });
 
-    /* ---------------- 事件 ---------------- */
-
-    let started = false;
-    const tryStart = async (reason: string): Promise<void> => {
-        if (started) return;
-        started = true;
+    /*
+     * 纵深防御（非安全边界）：注册宿主核验过的 tool.willExecute 钩子——
+     * output.cancel = true 即取消工具，这是宿主强制执行机制，不是提示词约束。
+     * 被「禁用工具」标记的线程里，任何工具调用都会被取消。
+     *
+     * 残余风险（已核验但无法从插件侧消除）：内部 WS generate_response 回合是否触发
+     * 该钩子无法保证。正因如此，groupAgentPolicy 不再提供 noTools 作为安全选项
+     * （旧配置里的 noTools 会被当作 refuse 处理），默认拒绝群 agent 回合。
+     * 这里保留钩子作为尽力而为的纵深防御，不对其在内部 WS 路径生效作任何保证。
+     */
+    const willExecuteDisposable = context.events.on('tool.willExecute', (input: any, output: any) => {
         try {
-            await bridge.start();
-        } catch (e) {
-            logger.error(`启动失败（${reason}）`, e);
+            const threadId = input?.context?.threadId;
+            if (typeof threadId === 'string' && bridge.isToolsDisabledForThread(threadId)) {
+                output.cancel = true;
+            }
+        } catch {
+            /* 钩子异常不能阻断宿主工具执行链 */
         }
-        refreshStatusBar();
-    };
-
-    const readyDisposable = context.events.on('app.ready', () => {
-        void tryStart('app.ready');
     });
 
-    /* app.ready 可能已经错过，直接尝试一次 */
-    void tryStart('activate');
+    /* ---------------- 事件 ---------------- */
+
+    let disposed = false;
+    let retryTimer: ReturnType<typeof setTimeout> | undefined;
+    let changeTimer: ReturnType<typeof setTimeout> | undefined;
+    let retryDelay = 2000;
+    let lifecycle: Promise<void> = Promise.resolve();
+    const requestStart = (restart = false): Promise<void> => {
+        clearTimeout(retryTimer);
+        lifecycle = lifecycle.catch(() => {}).then(async () => {
+            if (disposed) return;
+            if (!restart && bridge.getStatus().running) return;
+            try {
+                // 每次失败尝试都先释放旧连接，杜绝多个 Stream 客户端。
+                await bridge.stop();
+                await bridge.start();
+                if (!bridge.getStatus().running) throw new Error('连接未就绪');
+                retryDelay = 2000;
+            } catch {
+                logger.warn(`桥接未启动，${retryDelay}ms 后重试；请检查安全密钥与配置`);
+                if (!disposed) {
+                    retryTimer = setTimeout(() => { void requestStart(); }, retryDelay);
+                    retryTimer.unref?.();
+                    retryDelay = Math.min(retryDelay * 2, 60_000);
+                }
+            }
+            refreshStatusBar();
+        });
+        return lifecycle;
+    };
+    const readyDisposable = context.events.on('app.ready', () => { void requestStart(); });
+    void requestStart();
 
     const settingsDisposable = settings.onDidChange((e: any) => {
-        /* 换线程相关配置后重建映射 */
-        if (typeof e?.key === 'string' && e.key.startsWith('dingtalkBridge.')) {
-            logger.info('配置变更，刷新状态栏', e.key);
-            refreshStatusBar();
+        if (typeof e?.key !== 'string' || !e.key.startsWith('dingtalkBridge.')) return;
+        const reconnectKeys = ['clientId', 'clientSecret', 'clientSecretSecretKey', 'robotCode', 'almaApiPort'];
+        if (reconnectKeys.some(k => e.key === `dingtalkBridge.${k}`)) {
+            clearTimeout(changeTimer);
+            changeTimer = setTimeout(() => { void requestStart(true); }, 300);
         }
+        refreshStatusBar();
     });
 
     /* 离线测试探针：仅测试宿主会设置该环境变量 */
@@ -229,7 +316,11 @@ export async function activate(context: PluginContext): Promise<PluginActivation
     return {
         dispose: async () => {
             logger.info('DingTalk Bridge 正在卸载…');
+            disposed = true;
+            clearTimeout(retryTimer);
+            clearTimeout(changeTimer);
             clearInterval(statusTimer);
+            clearInterval(sweepTimer);
             for (const d of disposables) {
                 try {
                     d.dispose();
@@ -238,9 +329,11 @@ export async function activate(context: PluginContext): Promise<PluginActivation
                 }
             }
             toolDisposable.dispose();
+            willExecuteDisposable.dispose();
             readyDisposable.dispose();
             settingsDisposable.dispose();
             statusBar.dispose();
+            await lifecycle.catch(() => {});
             await bridge.stop();
             logger.info('DingTalk Bridge 已卸载');
         },

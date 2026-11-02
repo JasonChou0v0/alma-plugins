@@ -42,8 +42,8 @@ eq('空文本返回空数组', DingTalkClient.chunk(''), []);
     /* 优先在换行处切 */
     const text = 'x'.repeat(3900) + '\n' + 'y'.repeat(1000);
     const parts = DingTalkClient.chunk(text);
-    ok('优先按换行切分', parts[0].length === 3900);
-    ok('换行被吃掉', !parts[1].startsWith('\n'));
+    ok('优先按换行切分', parts[0] === 'x'.repeat(3900) + '\n');
+    ok('换行完整保留，重组不丢字符', parts.join('') === text);
 }
 
 /* ---------------- 流式截取 ---------------- */

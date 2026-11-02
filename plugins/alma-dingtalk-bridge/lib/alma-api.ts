@@ -4,7 +4,10 @@
  * 只用于插件 API 覆盖不到的部分：
  * - 建线程（插件上下文的 chat.createThread 未接线）
  * - 读工作区列表（用于 /ws 命令）
- * - 回读最终消息（防止增量丢字）
+ * - 读线程/消息（用于校验线程是否还在）
+ *
+ * 注意：最终回复文本不再回读数据库——流式与收尾都以本轮累计的 turn.text 为
+ * 单一权威缓冲，避免「流式用 turn.text、最终用 DB」两套来源掩饰未完成。
  */
 import type { AlmaThread, AlmaWorkspace } from './types';
 

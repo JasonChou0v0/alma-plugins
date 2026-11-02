@@ -6,6 +6,8 @@
  * 4. /use 不依赖 settings:write 权限
  */
 
+import { readFileSync } from 'node:fs';
+
 let pass = 0;
 let fail = 0;
 const check = (name, cond, extra = '') => {
@@ -110,8 +112,8 @@ console.log('\n[问题3: 进行中时新消息排队]');
 /* ============ 问题 4：/use 不依赖 settings:write ============ */
 console.log('\n[问题4: /use 权限]');
 {
-    const perms = ['network:fetch', 'chat:read', 'chat:write', 'tools:register', 'notifications', 'storage:secrets'];
-    check('manifest 不含 settings:write', !perms.includes('settings:write'));
+    const { permissions } = JSON.parse(readFileSync(new URL('../manifest.json', import.meta.url), 'utf8'));
+    check('manifest 不含无效 storage:secrets 权限', !permissions.includes('storage:secrets'));
 
     /* /use 现在写 storage.local，不需要 settings:write */
     const useImpl = (storage, key, wsId) => {
@@ -119,8 +121,8 @@ console.log('\n[问题4: /use 权限]');
         return true;
     };
     const store = {};
-    check('/use 写 storage 成功', useImpl(store, 'cid::sender', 'mp5i52w9r9yp7jxfrz') === true);
-    check('覆盖值已记录', store['cid::sender'] === 'mp5i52w9r9yp7jxfrz');
+    check('/use 写 storage 成功', useImpl(store, 'cid::sender', 'workspace-test') === true);
+    check('覆盖值已记录', store['cid::sender'] === 'workspace-test');
 }
 
 /* ============ 组合：一条完整群消息 ============ */

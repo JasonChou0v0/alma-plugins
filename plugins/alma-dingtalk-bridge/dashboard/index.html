@@ -1,0 +1,465 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>DingTalk Bridge 消息看板</title>
+<style>
+  :root {
+    --bg: #0f1115;
+    --panel: #171a21;
+    --panel-2: #1e222b;
+    --border: #2a2f3a;
+    --text: #e6e9ef;
+    --muted: #8b93a7;
+    --green: #3fb950;
+    --amber: #d29922;
+    --red: #f85149;
+    --blue: #58a6ff;
+    --purple: #bc8cff;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 24px;
+    background: var(--bg); color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'PingFang SC', sans-serif;
+    font-size: 14px; line-height: 1.5;
+  }
+  h1 { font-size: 20px; margin: 0 0 4px; font-weight: 600; }
+  .sub { color: var(--muted); font-size: 13px; margin-bottom: 20px; }
+
+  .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 12px; margin-bottom: 20px; }
+  .stat { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 14px 16px; }
+  .stat .label { color: var(--muted); font-size: 12px; margin-bottom: 6px; }
+  .stat .value { font-size: 26px; font-weight: 600; font-variant-numeric: tabular-nums; }
+  .stat.ok .value { color: var(--green); }
+  .stat.cmd .value { color: var(--blue); }
+  .stat.drop .value { color: var(--red); }
+
+  .toolbar { display: flex; gap: 10px; margin-bottom: 14px; flex-wrap: wrap; align-items: center; }
+  input[type=search] {
+    flex: 1; min-width: 200px; background: var(--panel); border: 1px solid var(--border);
+    color: var(--text); padding: 8px 12px; border-radius: 8px; font-size: 13px; outline: none;
+  }
+  input[type=search]:focus { border-color: var(--blue); }
+  .filter-btn {
+    background: var(--panel); border: 1px solid var(--border); color: var(--muted);
+    padding: 7px 14px; border-radius: 8px; font-size: 13px; cursor: pointer;
+  }
+  .filter-btn.active { background: var(--blue); border-color: var(--blue); color: #fff; }
+
+  table { width: 100%; border-collapse: collapse; background: var(--panel); border-radius: 10px; overflow: hidden; table-layout: fixed; }
+  thead th {
+    text-align: left; padding: 10px 14px; font-size: 12px; font-weight: 500;
+    color: var(--muted); background: var(--panel-2); border-bottom: 1px solid var(--border);
+    position: sticky; top: 0;
+  }
+  tbody td { padding: 10px 14px; border-bottom: 1px solid var(--border); vertical-align: top; }
+  tbody tr:last-child td { border-bottom: none; }
+  tbody tr { cursor: pointer; }
+  tbody tr:hover { background: var(--panel-2); }
+
+  .time { color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; font-size: 12px; }
+  .msgid { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; color: var(--muted); }
+  .nick { font-weight: 500; }
+  .tag { display: inline-block; padding: 1px 7px; border-radius: 4px; font-size: 11px; font-weight: 500; margin-left: 6px; white-space: nowrap; }
+  .tag.corp { background: rgba(63,185,80,.15); color: var(--green); }
+  .tag.ext { background: rgba(210,153,34,.15); color: var(--amber); }
+  .tag.cmd { background: rgba(88,166,255,.15); color: var(--blue); }
+  .tag.drop { background: rgba(248,81,73,.15); color: var(--red); }
+  .tag.dm  { background: rgba(188,140,255,.15); color: var(--purple); }
+  .tag.grp { background: rgba(88,166,255,.12); color: #7fb4e8; }
+  .text { word-break: break-word; min-width: 200px; }
+  .msgid {
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 11px; color: var(--muted);
+    max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .empty { text-align: center; padding: 40px; color: var(--muted); }
+
+  /* ---------- 详情抽屉 ---------- */
+  .backdrop {
+    position: fixed; inset: 0; background: rgba(0,0,0,.55);
+    opacity: 0; pointer-events: none; transition: opacity .18s ease; z-index: 40;
+  }
+  .backdrop.open { opacity: 1; pointer-events: auto; }
+
+  .drawer {
+    position: fixed; top: 0; right: 0; bottom: 0; width: min(560px, 92vw);
+    background: var(--panel); border-left: 1px solid var(--border);
+    transform: translateX(100%); transition: transform .22s cubic-bezier(.4,0,.2,1);
+    z-index: 50; display: flex; flex-direction: column;
+  }
+  .drawer.open { transform: translateX(0); }
+
+  .drawer-hd {
+    display: flex; align-items: flex-start; justify-content: space-between;
+    padding: 18px 20px; border-bottom: 1px solid var(--border); gap: 12px;
+  }
+  .drawer-hd h2 { font-size: 15px; margin: 0 0 4px; font-weight: 600; }
+  .drawer-hd .meta { color: var(--muted); font-size: 12px; font-family: ui-monospace, Menlo, monospace; }
+  .close-btn {
+    background: none; border: 1px solid var(--border); color: var(--muted);
+    width: 28px; height: 28px; border-radius: 7px; cursor: pointer;
+    font-size: 16px; line-height: 1; flex-shrink: 0;
+  }
+  .close-btn:hover { background: var(--panel-2); color: var(--text); }
+
+  .drawer-body { padding: 18px 20px; overflow-y: auto; flex: 1; }
+
+  .section { margin-bottom: 22px; }
+  .section-title {
+    font-size: 12px; font-weight: 600; color: var(--muted);
+    text-transform: uppercase; letter-spacing: .04em; margin-bottom: 10px;
+  }
+
+  .msg-box {
+    background: var(--panel-2); border: 1px solid var(--border); border-radius: 8px;
+    padding: 12px 14px; white-space: pre-wrap; word-break: break-word;
+    font-size: 13px; max-height: 240px; overflow-y: auto;
+  }
+
+  .kv { display: grid; grid-template-columns: 132px 1fr; gap: 8px 12px; font-size: 13px; }
+  .kv dt { color: var(--muted); font-size: 12px; }
+  .kv dd { margin: 0; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; word-break: break-all; }
+
+  .pill {
+    display: inline-block; padding: 1px 8px; border-radius: 4px; font-size: 11px;
+    font-weight: 500; font-family: inherit;
+  }
+  .pill.ok { background: rgba(63,185,80,.15); color: var(--green); }
+  .pill.miss { background: rgba(248,81,73,.15); color: var(--red); }
+  .pill.na { background: rgba(139,147,167,.15); color: var(--muted); }
+
+  .flag-row { display: flex; gap: 8px; flex-wrap: wrap; }
+  .flag {
+    background: var(--panel-2); border: 1px solid var(--border); border-radius: 7px;
+    padding: 7px 12px; font-size: 12px; display: flex; align-items: center; gap: 7px;
+  }
+  .dot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; }
+  .dot.g { background: var(--green); }
+  .dot.r { background: var(--red); }
+  .dot.a { background: var(--amber); }
+
+  .at-list { display: flex; flex-direction: column; gap: 6px; }
+  .at-item {
+    background: var(--panel-2); border: 1px solid var(--border); border-radius: 7px;
+    padding: 8px 12px; font-family: ui-monospace, Menlo, monospace; font-size: 11px;
+    word-break: break-all;
+  }
+  .hint { color: var(--muted); font-size: 12px; font-style: italic; }
+</style>
+</head>
+<body>
+
+<h1>DingTalk Bridge 消息看板</h1>
+<div class="sub">机器人接收到的消息明细 · 点击任意行查看完整元数据</div>
+
+<div class="stats">
+  <div class="stat"><div class="label">今日消息总数</div><div class="value" id="s-total">—</div></div>
+  <div class="stat ok"><div class="label">已投递</div><div class="value" id="s-delivered">—</div></div>
+  <div class="stat cmd"><div class="label">命令</div><div class="value" id="s-commands">—</div></div>
+  <div class="stat drop"><div class="label">已丢弃</div><div class="value" id="s-dropped">—</div></div>
+</div>
+
+<div class="toolbar">
+  <input type="search" id="search" placeholder="搜索昵称、内容、消息 ID…">
+  <button class="filter-btn active" data-filter="all">全部</button>
+  <button class="filter-btn" data-filter="delivered">已投递</button>
+  <button class="filter-btn" data-filter="commands">命令</button>
+  <button class="filter-btn" data-filter="dropped">已丢弃</button>
+  <button class="filter-btn" data-filter="dm">仅私聊</button>
+  <button class="filter-btn" data-filter="group">仅群聊</button>
+</div>
+
+<table>
+  <thead>
+    <tr>
+      <th style="width:84px">时间</th>
+      <th style="width:170px">发言人</th>
+      <th>内容</th>
+      <th style="width:180px">消息 ID</th>
+    </tr>
+  </thead>
+  <tbody id="rows"></tbody>
+</table>
+
+<div class="backdrop" id="backdrop"></div>
+
+<aside class="drawer" id="drawer" aria-hidden="true">
+  <div class="drawer-hd">
+    <div style="min-width:0">
+      <h2 id="d-nick">—</h2>
+      <div class="meta" id="d-msgid">—</div>
+    </div>
+    <button class="close-btn" id="d-close" title="关闭">✕</button>
+  </div>
+  <div class="drawer-body" id="d-body"></div>
+</aside>
+
+<script>
+const DATA_URL = './data.json';
+
+let all = [];
+let filter = 'all';
+let query = '';
+
+function fmtTime(ts) {
+  return new Date(ts).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+}
+
+function fmtFull(ts) {
+  return new Date(ts).toLocaleString('zh-CN');
+}
+
+function classify(e) {
+  if (e.dropped) return 'dropped';
+  if (e.command) return 'commands';
+  return 'delivered';
+}
+
+/** conversationType: '1' 单聊，'2' 群聊（钉钉约定） */
+function chatKind(e) {
+  const t = e.fields?.convType;
+  if (t === '1') return 'dm';
+  if (t === '2') return 'group';
+  return 'unknown';
+}
+
+function esc(s) {
+  return String(s ?? '').replace(/[<>&"]/g, (c) => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;', '"': '&quot;' }[c]));
+}
+
+function render() {
+  const rows = document.getElementById('rows');
+  const list = all.filter((e) => {
+    if (filter === 'dm' || filter === 'group') {
+      if (chatKind(e) !== filter) return false;
+    } else if (filter !== 'all' && classify(e) !== filter) return false;
+    if (!query) return true;
+    const hay = `${e.fields?.nick || ''} ${e.text || ''} ${e.msgId || ''}`.toLowerCase();
+    return hay.includes(query.toLowerCase());
+  });
+
+  if (!list.length) {
+    rows.innerHTML = '<tr><td colspan="4" class="empty">没有匹配的消息</td></tr>';
+    return;
+  }
+
+  rows.innerHTML = list.map((e, idx) => {
+    const kind = classify(e);
+    const nick = e.fields?.nick || '—';
+    const isExt = e.fields?.corp === '-';
+    const chat = chatKind(e);
+    const chatTag = chat === 'dm'
+      ? '<span class="tag dm">私聊</span>'
+      : chat === 'group' ? '<span class="tag grp">群聊</span>' : '';
+
+    const tag = kind === 'command'
+      ? '<span class="tag cmd">命令</span>'
+      : kind === 'dropped'
+        ? '<span class="tag drop">丢弃</span>'
+        : (isExt ? '<span class="tag ext">外部</span>' : '<span class="tag corp">内部</span>') + chatTag;
+
+    return `<tr data-idx="${all.indexOf(e)}">
+      <td class="time">${fmtTime(e.ts)}</td>
+      <td><span class="nick">${esc(nick)}</span>${tag}</td>
+      <td class="text">${esc(e.text) || '<span style="color:var(--muted)">（空）</span>'}</td>
+      <td class="msgid">${esc(e.msgId)}</td>
+    </tr>`;
+  }).join('');
+}
+
+/* ---------------- 详情抽屉 ---------------- */
+
+const drawer = document.getElementById('drawer');
+const backdrop = document.getElementById('backdrop');
+
+function closeDrawer() {
+  drawer.classList.remove('open');
+  backdrop.classList.remove('open');
+  drawer.setAttribute('aria-hidden', 'true');
+}
+
+function flag(label, state, extra = '') {
+  const map = {
+    ok:  ['g', '正常'],
+    miss:['r', '缺失'],
+    warn:['a', extra || '异常'],
+  };
+  const [dotClass, text] = map[state] ?? map.warn;
+  return `<div class="flag"><span class="dot ${dotClass}"></span>${label}：${text}</div>`;
+}
+
+function openDrawer(e) {
+  document.getElementById('d-nick').textContent = e.fields?.nick || '未知发言人';
+  document.getElementById('d-msgid').textContent = e.msgId;
+
+  const f = e.fields ?? {};
+  const kind = classify(e);
+  const isExt = f.corp === '-';
+
+  /* atUsers 解析 */
+  let atUsers = [];
+  try {
+    const parsed = JSON.parse(f.atUsers || '[]');
+    if (Array.isArray(parsed)) atUsers = parsed;
+  } catch { /* 忽略 */ }
+
+  const body = [];
+
+  /* ① 消息内容 */
+  body.push(`<div class="section">
+    <div class="section-title">消息内容</div>
+    <div class="msg-box">${esc(e.text) || '<span class="hint">（空）</span>'}</div>
+  </div>`);
+
+  /* ② 处理结果 */
+  const stateLabel = kind === 'delivered' ? '已投递到 Alma 线程'
+    : kind === 'commands' ? '识别为命令'
+    : '已丢弃';
+  const stateDot = kind === 'dropped' ? 'r' : 'g';
+  body.push(`<div class="section">
+    <div class="section-title">处理结果</div>
+    <div class="flag-row">
+      <div class="flag"><span class="dot ${stateDot}"></span>${stateLabel}</div>
+      ${isExt ? '<div class="flag"><span class="dot a"></span>来源：外部企业</div>' : '<div class="flag"><span class="dot g"></span>来源：本企业</div>'}
+    </div>
+  </div>`);
+
+  /* ③ 字段完整性 */
+  body.push(`<div class="section">
+    <div class="section-title">字段完整性</div>
+    <div class="flag-row">
+      ${flag('会话 ID', f.conv === 'ok' ? 'ok' : 'miss')}
+      ${flag('回推地址', f.webhook === 'ok' ? 'ok' : 'miss')}
+      ${flag('员工 ID', f.staff && f.staff !== '-' ? 'ok' : 'warn', '无（跨企业常见）')}
+      ${flag('企业 ID', f.corp && f.corp !== '-' ? 'ok' : 'warn', '无（外部用户）')}
+    </div>
+  </div>`);
+
+  /* ④ 完整元数据 */
+  const rows = [
+    ['消息 ID', e.msgId],
+    ['接收时间', fmtFull(e.ts)],
+    ['发言人', f.nick || '—'],
+    ['员工 ID', f.staff || '—'],
+    ['发送者 ID', f.sender || '—'],
+    ['所属企业', f.corp || '—'],
+    ['机器人企业', f.botCorp || '—'],
+    ['机器人 ID', f.botUserId || '—'],
+    ['会话类型', chatKind(e) === 'dm' ? '单聊（私聊）' : chatKind(e) === 'group' ? '群聊' : '未知'],
+    ['会话标题', f.convTitle && f.convTitle !== '-' ? f.convTitle : '—'],
+    ['会话 ID', f.conv || '—'],
+    ['回推地址', f.webhook || '—'],
+    ['引用消息 ID', f.originalMsgId && f.originalMsgId !== '-' ? f.originalMsgId : '（未提供）'],
+    ['是否引用', f.isReply && f.isReply !== '-' ? String(f.isReply) : '（未提供）'],
+  ];
+
+  body.push(`<div class="section">
+    <div class="section-title">完整元数据</div>
+    <dl class="kv">
+      ${rows.map(([k, v]) => `<dt>${k}</dt><dd>${esc(v)}</dd>`).join('')}
+    </dl>
+  </div>`);
+
+  /* ⑤ @ 提及 */
+  body.push(`<div class="section">
+    <div class="section-title">@ 提及（${atUsers.length}）</div>
+    ${atUsers.length
+      ? `<div class="at-list">${atUsers.map((u, i) => {
+          const isBot = u.dingtalkId && u.dingtalkId === f.botUserId;
+          return `<div class="at-item">
+            <div style="color:var(--muted);font-family:inherit;font-size:11px;margin-bottom:3px">
+              第 ${i + 1} 项${isBot ? ' · 机器人自己' : ''}${u.name ? ` · ${esc(u.name)}` : ' · 无 name 字段'}
+            </div>
+            ${esc(u.dingtalkId || '(无 ID)')}
+          </div>`;
+        }).join('')}</div>`
+      : '<div class="hint">无 @ 提及（钉钉常在此场景不返回 atUsers）</div>'}
+  </div>`);
+
+  /* ⑥ 原始载荷（完整） */
+  if (e.rawPayload) {
+    const keys = Object.keys(e.rawPayload);
+    body.push(`<div class="section">
+      <div class="section-title">原始载荷 · 完整（${keys.length} 个字段）</div>
+      <div class="msg-box" style="font-family:ui-monospace,Menlo,monospace;font-size:11px;max-height:320px">${esc(
+        JSON.stringify(e.rawPayload, null, 2),
+      )}</div>
+    </div>`);
+  } else {
+    body.push(`<div class="section">
+      <div class="section-title">原始载荷</div>
+      <div class="hint">未归档（本条早于归档功能上线）</div>
+    </div>`);
+  }
+
+  /* ⑦ 事件头 */
+  if (e.rawHeaders) {
+    body.push(`<div class="section">
+      <div class="section-title">事件头（Stream headers）</div>
+      <div class="msg-box" style="font-family:ui-monospace,Menlo,monospace;font-size:11px">${esc(
+        JSON.stringify(e.rawHeaders, null, 2),
+      )}</div>
+    </div>`);
+  }
+
+  document.getElementById('d-body').innerHTML = body.join('');
+
+  drawer.classList.add('open');
+  backdrop.classList.add('open');
+  drawer.setAttribute('aria-hidden', 'false');
+}
+
+document.getElementById('rows').addEventListener('click', (ev) => {
+  const tr = ev.target.closest('tr[data-idx]');
+  if (!tr) return;
+  const idx = Number(tr.dataset.idx);
+  if (Number.isFinite(idx) && all[idx]) openDrawer(all[idx]);
+});
+
+document.getElementById('d-close').addEventListener('click', closeDrawer);
+backdrop.addEventListener('click', closeDrawer);
+document.addEventListener('keydown', (ev) => { if (ev.key === 'Escape') closeDrawer(); });
+
+/* ---------------- 数据加载 ---------------- */
+
+async function load() {
+  try {
+    const res = await fetch(DATA_URL + '?t=' + Date.now());
+    const data = await res.json();
+    all = data.entries || [];
+
+    document.getElementById('s-total').textContent = data.total ?? 0;
+    document.getElementById('s-delivered').textContent = data.delivered ?? 0;
+    document.getElementById('s-commands').textContent = data.commands ?? 0;
+    document.getElementById('s-dropped').textContent = data.dropped ?? 0;
+
+    render();
+  } catch (err) {
+    document.getElementById('rows').innerHTML =
+      '<tr><td colspan="4" class="empty">加载失败：' + err.message +
+      '<br>请先运行 <code>node dashboard/collect.mjs</code> 生成 data.json</td></tr>';
+  }
+}
+
+document.getElementById('search').addEventListener('input', (e) => {
+  query = e.target.value;
+  render();
+});
+
+document.querySelectorAll('.filter-btn').forEach((btn) => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('.filter-btn').forEach((b) => b.classList.remove('active'));
+    btn.classList.add('active');
+    filter = btn.dataset.filter;
+    render();
+  });
+});
+
+load();
+setInterval(load, 10000);
+</script>
+</body>
+</html>

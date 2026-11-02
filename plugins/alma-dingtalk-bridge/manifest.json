@@ -1,7 +1,7 @@
 {
     "id": "alma-dingtalk-bridge",
     "name": "DingTalk Bridge",
-    "version": "1.0.0",
+    "version": "1.1.0",
     "description": "把钉钉机器人接成 Alma 的聊天渠道：Stream 模式收消息，驱动完整 agent（工具/技能/项目工作区），回复推回钉钉。",
     "author": {
         "name": "JasonChou"
@@ -21,7 +21,7 @@
         "chat:write",
         "tools:register",
         "notifications",
-        "storage:secrets"
+        "settings:write"
     ],
     "activationEvents": [
         "onStartup"
@@ -43,6 +43,10 @@
             {
                 "id": "dingtalkBridge.testAlma",
                 "title": "钉钉桥接：连通性自检"
+            },
+            {
+                "id": "dingtalkBridge.setSecret",
+                "title": "钉钉桥接：设置安全密钥"
             }
         ],
         "components": {
@@ -62,10 +66,10 @@
                     "default": "",
                     "description": "钉钉应用 AppKey（Client ID）"
                 },
-                "dingtalkBridge.clientSecret": {
+                "dingtalkBridge.clientSecretSecretKey": {
                     "type": "string",
-                    "default": "",
-                    "description": "钉钉应用 AppSecret（Client Secret）"
+                    "default": "dingtalk.clientSecret",
+                    "description": "AppSecret 在 context.storage.secrets 中的键名；通过「设置安全密钥」命令输入，不允许明文回退。"
                 },
                 "dingtalkBridge.robotCode": {
                     "type": "string",
@@ -97,10 +101,29 @@
                     ],
                     "description": "会话隔离策略：per-chat 每群一个线程；per-sender 群内每人各自一个线程；single 全部共用一个线程"
                 },
+                "dingtalkBridge.groupAgentPolicy": {
+                    "type": "string",
+                    "default": "refuse",
+                    "enum": [
+                        "refuse",
+                        "fullTools"
+                    ],
+                    "description": "群聊（conversationType=2）里是否驱动带工具的 agent 回合。refuse（默认）：拒绝群 agent 任务并解释，不提交 generate_response——这是唯一的安全选项。fullTools：管理员明确接受风险，群回合并保留全部工具。提示词不是权限边界，不能用来约束工具。该约束对所有发送人一视同仁，管理员也不绕过。注：曾经的 noTools 值已移除——它依赖宿主 tool.willExecute 钩子强制取消工具，而该钩子在内部 WS generate_response 回合是否触发无法从插件侧确认，故不能当作安全选项；旧配置里的 noTools 会被当作 refuse 处理。"
+                },
                 "dingtalkBridge.allowedStaffIds": {
                     "type": "string",
                     "default": "",
-                    "description": "仅允许这些 senderStaffId 使用，逗号分隔。留空表示不限制"
+                    "description": "用户白名单：仅允许这些 senderStaffId 使用（逗号分隔）。留空则拒绝所有入站（无开放模式）。nick: 占位 ID 永不可授权。"
+                },
+                "dingtalkBridge.allowedConversationIds": {
+                    "type": "string",
+                    "default": "",
+                    "description": "群白名单：仅允许这些 conversationId 的群聊（逗号分隔）。留空则拒绝所有群聊。单聊不受此约束，仍由 allowedStaffIds 约束。"
+                },
+                "dingtalkBridge.adminStaffIds": {
+                    "type": "string",
+                    "default": "",
+                    "description": "管理员 staffId（逗号分隔）。控制 /use、/new、/allow、/deny、/access；留空则无人可用。管理员仍需在用户白名单中，只有 /allow group 可在未授权群执行。"
                 },
                 "dingtalkBridge.streamingReply": {
                     "type": "boolean",
@@ -111,6 +134,16 @@
                     "type": "boolean",
                     "default": true,
                     "description": "使用工具时先推一条「正在处理…」提示（整轮只发一次，不会按工具刷屏）"
+                },
+                "dingtalkBridge.logRawPayload": {
+                    "type": "boolean",
+                    "default": true,
+                    "description": "本机完整原始载荷归档（包含敏感 webhook），文件权限 0600；禁止提交或公开分享。"
+                },
+                "dingtalkBridge.robotName": {
+                    "type": "string",
+                    "default": "豆豆",
+                    "description": "机器人自己的昵称。用于从 @ 提及里排除机器人自己，避免把「@豆豆」当成被 @ 的人"
                 }
             }
         }

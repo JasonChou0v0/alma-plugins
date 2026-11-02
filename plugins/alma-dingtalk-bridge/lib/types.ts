@@ -7,13 +7,49 @@ export interface BridgeConfig {
     clientId: string;
     clientSecret: string;
     robotCode: string;
+    /** 机器人自己的昵称，用于从 @ 列表排除自己 */
+    robotName: string;
     defaultModel: string;
     workspaceId: string;
     mode: SessionMode;
     allowedStaffIds: string[];
+    /**
+     * 群白名单：仅这些 conversationId 的群聊（conversationType=2）被允许。
+     * 空则拒绝所有群聊。单聊（conversationType=1）不受此约束，仍由 allowedStaffIds 约束。
+     */
+    allowedConversationIds: string[];
+    /**
+     * 管理员 staffId：仅这些显式 staffId 能执行 /use、/new。
+     * 空则无人可用这两个命令；不把 allowedStaffIds 隐式当作管理员。
+     * 仍受 allowedStaffIds 与 allowedConversationIds 约束（入站鉴权里已完成）。
+     */
+    adminStaffIds: string[];
     streamingReply: boolean;
     replyOnToolUse: boolean;
+    /** 记录完整原始载荷，用于排查字段名 */
+    logRawPayload: boolean;
+    /**
+     * 群聊（conversationType=2）里是否允许驱动带工具的 agent 回合。
+     * - refuse（默认）：拒绝群 agent 任务并解释，不提交 generate_response——唯一安全选项
+     * - fullTools：允许群回合并保留工具（管理员明确接受风险）
+     *
+     * 曾经的 noTools 已移除：它依赖宿主 tool.willExecute 钩子取消工具，而该钩子在内部
+     * WS generate_response 回合是否触发无法从插件侧确认，故不当作安全选项。readConfig
+     * 会把旧配置里的 noTools 映射为 refuse。tool.willExecute 钩子仍作为不可靠的纵深防御
+     * 注册，但不保证生效、不作为安全边界。
+     */
+    groupAgentPolicy: GroupAgentPolicy;
+    /**
+     * 从 context.storage.secrets 读取 clientSecret 的键名。
+     * 留空使用 dingtalk.clientSecret；不允许回退明文设置。
+     */
+    clientSecretSecretKey: string;
 }
+
+/**
+ * noTools 保留在联合类型里仅用于识别并迁移旧配置（→ refuse），不再作为可选安全策略。
+ */
+export type GroupAgentPolicy = 'refuse' | 'noTools' | 'fullTools';
 
 export type SessionMode = 'per-chat' | 'per-sender' | 'single';
 
@@ -48,6 +84,11 @@ export interface TurnState {
     /** 本轮是否已发过「正在处理」提示 */
     toolNoticeSent?: boolean;
     stopRequested?: boolean;
+    settled?: () => void;
+    flushInFlight?: Promise<void>;
+    deliveryFailed?: boolean;
+    /** 群回合且策略为 noTools 时置位，供 tool.willExecute 钩子取消工具 */
+    toolsDisabled?: boolean;
 }
 
 export interface AlmaThread {
@@ -95,5 +136,7 @@ export interface DingTalkRobotMessage {
     sessionWebhook: string;
     sessionWebhookExpiredTime: number;
     robotCode: string;
+    /** 机器人自己的昵称，用于从 @ 列表排除自己 */
+    robotName: string;
     createAt?: number;
 }

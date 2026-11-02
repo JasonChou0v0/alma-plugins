@@ -1,0 +1,14 @@
+node_modules/
+.DS_Store
+test/.storage/
+dashboard/data.json
+*.log
+*.jsonl
+.env
+.env.*
+settings.json
+secrets.json
+*.pem
+*.key
+work/
+tmp/
