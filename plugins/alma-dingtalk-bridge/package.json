@@ -1,6 +1,6 @@
 {
     "name": "alma-dingtalk-bridge",
-    "version": "2.1.1",
+    "version": "2.2.0",
     "type": "module",
     "description": "DingTalk channel bridge for Alma — Stream mode intake, full agent turn via Alma's internal WebSocket protocol",
     "author": {
@@ -14,6 +14,7 @@
         "test:offline": "bun scripts/test.mjs",
         "test:unit": "bun scripts/test.mjs --unit",
         "test:integration": "bun scripts/test.mjs --integration",
+        "typecheck": "tsc -p .",
         "check:bundle": "bun scripts/check-bundle.mjs",
         "migrate:data": "node scripts/migrate-data.mjs"
     },

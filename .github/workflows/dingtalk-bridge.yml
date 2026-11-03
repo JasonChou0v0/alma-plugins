@@ -33,6 +33,8 @@ jobs:
         run: node scripts/lint-versions.mjs
       - name: Restore exact locked dependencies
         run: bun install --frozen-lockfile --ignore-scripts
+      - name: Type check
+        run: bun run typecheck
       - name: Offline unit and integration tests
         run: bun run test:offline
       - name: Compare committed bundle to source

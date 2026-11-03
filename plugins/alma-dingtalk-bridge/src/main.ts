@@ -82,7 +82,8 @@ export async function activate(context: PluginContext): Promise<PluginActivation
                 .filter(Boolean),
             streamingReply: Boolean(get<boolean>('streamingReply', false)),
             replyOnToolUse: Boolean(get<boolean>('replyOnToolUse', true)),
-            logRawPayload: Boolean(get<boolean>('logRawPayload', true)),
+            logRawPayload: Boolean(get<boolean>('logRawPayload', false)),
+            rawPayloadRetentionDays: Math.min(90, Math.max(1, Math.floor(Number(get<number>('rawPayloadRetentionDays', 7))) || 7)),
             groupAgentPolicy: rawPolicy === 'fullTools' ? 'fullTools' : 'refuse',
             clientSecretSecretKey: String(get<string>('clientSecretSecretKey', 'dingtalk.clientSecret') ?? 'dingtalk.clientSecret').trim(),
         };

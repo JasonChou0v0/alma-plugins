@@ -52,9 +52,9 @@ const EPHEMERAL_CONTEXT_BASE = [
 ].join('\n');
 
 export interface SocketLogger {
-    info: (...a: unknown[]) => void;
-    warn: (...a: unknown[]) => void;
-    error: (...a: unknown[]) => void;
+    info: (message: string, ...a: unknown[]) => void;
+    warn: (message: string, ...a: unknown[]) => void;
+    error: (message: string, ...a: unknown[]) => void;
 }
 
 export interface SocketCallbacks {
@@ -81,8 +81,9 @@ async function resolveWebSocketCtor(): Promise<any> {
         const mod: any = await import('ws');
         const Ctor = mod?.default ?? mod?.WebSocket ?? mod;
         if (typeof Ctor === 'function') return Ctor;
-    } catch {
-        /* 继续降级 */
+    } catch (e) {
+        /* 继续降级，但留下线索 */
+        console.warn('加载 ws 包失败，回退全局 WebSocket：', e instanceof Error ? e.name : 'unknown');
     }
 
     /* 2. 回退到全局构造器（Node 22+ / 浏览器环境） */
@@ -190,7 +191,8 @@ export class AlmaSocket {
                     let msg: any;
                     try {
                         msg = JSON.parse(raw);
-                    } catch {
+                    } catch (e) {
+                        this.logger.warn('Alma WebSocket 消息解析失败，已忽略', e instanceof Error ? e.name : 'unknown');
                         return;
                     }
                     this.dispatch(msg);

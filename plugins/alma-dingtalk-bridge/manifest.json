@@ -1,7 +1,7 @@
 {
     "id": "alma-dingtalk-bridge",
     "name": "DingTalk Bridge",
-    "version": "2.1.1",
+    "version": "2.2.0",
     "description": "把钉钉机器人接成 Alma 的聊天渠道：Stream 模式收消息，驱动完整 agent（工具/技能/项目工作区），回复推回钉钉。",
     "author": {
         "name": "JasonChou"
@@ -137,8 +137,13 @@
                 },
                 "dingtalkBridge.logRawPayload": {
                     "type": "boolean",
-                    "default": true,
-                    "description": "本机完整原始载荷归档（包含敏感 webhook），文件权限 0600；禁止提交或公开分享。"
+                    "default": false,
+                    "description": "排查问题时临时开启：本机归档入站/出站原始载荷（含聊天全文，webhook 地址已脱敏），文件权限 0600；到期自动清理，禁止提交或公开分享。"
+                },
+                "dingtalkBridge.rawPayloadRetentionDays": {
+                    "type": "number",
+                    "default": 7,
+                    "description": "原始载荷归档保留天数（1–90），超期文件自动删除"
                 },
                 "dingtalkBridge.robotName": {
                     "type": "string",

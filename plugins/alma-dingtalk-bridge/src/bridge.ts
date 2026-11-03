@@ -1,14 +1,14 @@
 /**
  * 桥接核心：钉钉消息 → Alma agent → 钉钉回复
  */
-import * as fs from 'node:fs';
 import { dataPaths } from './paths.mjs';
-import * as path from 'node:path';
 import { DWClient, TOPIC_ROBOT } from 'dingtalk-stream';
 import type { PluginContext } from 'alma-plugin-api';
 
 import { AlmaApi } from './alma-api';
 import { loadAlmaImage } from './media';
+import { appendPrivate, DEFAULT_RETENTION_DAYS } from './archive';
+import { extractMentionedPeople, extractText, resolveQuotedMessage, type ParserEnv } from './message-parser';
 import { AuthorizationCommands } from './authorization';
 import { AlmaSocket } from './alma-socket';
 import { DingTalkClient } from './dingtalk-client';
@@ -115,6 +115,10 @@ export class DingTalkBridge {
             },
             this.ctx.logger,
             this.ctx.storagePath,
+            () => {
+                const c = this.cfg();
+                return { enabled: Boolean(c.logRawPayload), retentionDays: c.rawPayloadRetentionDays ?? DEFAULT_RETENTION_DAYS };
+            },
         );
 
         this.socket = new AlmaSocket(
@@ -739,8 +743,10 @@ export class DingTalkBridge {
         /* 去重：钉钉重推同一个 msgId */
         if (msgId) {
             const now = Date.now();
+            /* 插入顺序即时间顺序，遇到第一条未过期的就可以停 */
             for (const [id, ts] of this.seenMsgIds) {
-                if (now - ts > 5 * 60_000) this.seenMsgIds.delete(id);
+                if (now - ts <= 5 * 60_000) break;
+                this.seenMsgIds.delete(id);
             }
             if (this.seenMsgIds.has(msgId)) {
                 this.ctx.logger.info('重复消息，跳过', msgId);
@@ -822,10 +828,11 @@ export class DingTalkBridge {
                 text: this.extractText(payload).slice(0, 500),
                 at: Date.now(),
             });
-            /* 只保留最近 500 条，防止内存膨胀 */
-            if (this.msgCache.size > 500) {
-                const oldest = [...this.msgCache.entries()].sort((a, b) => a[1].at - b[1].at)[0];
-                if (oldest) this.msgCache.delete(oldest[0]);
+            /* 只保留最近 500 条；Map 按插入顺序，超限时直接删最老的一条，O(1) */
+            while (this.msgCache.size > 500) {
+                const oldest = this.msgCache.keys().next().value;
+                if (oldest === undefined) break;
+                this.msgCache.delete(oldest);
             }
         }
 
@@ -989,153 +996,38 @@ export class DingTalkBridge {
         try {
             const dir = this.logDir;
             if (!dir) return;
-            if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
-
-            const day = new Date().toISOString().slice(0, 10);
-            const file = path.join(dir, `dingtalk-payloads-${day}.jsonl`);
-
-            const record = {
+            appendPrivate(dir, {
                 receivedAt: new Date().toISOString(),
                 headers: downstream?.headers ?? null,
                 payload,
-            };
-
-            fs.appendFileSync(file, `${JSON.stringify(record)}\n`, { mode: 0o600 });
-            fs.chmodSync(file, 0o600);
+            }, this.cfg().rawPayloadRetentionDays ?? DEFAULT_RETENTION_DAYS);
         } catch (e) {
-            this.ctx.logger.warn('归档原始载荷失败', e);
+            this.ctx.logger.warn('归档原始载荷失败', e instanceof Error ? e.message : 'unknown');
         }
     }
 
-    /** 优先读取事件携带的引用原文；缺失时才查询同会话缓存。 */
+    private parserEnv(): ParserEnv {
+        const self = this;
+        return {
+            msgCache: this.msgCache,
+            get botName() { return self.botName; },
+            set botName(v) { self.botName = v; },
+            get botDingTalkId() { return self.botDingTalkId; },
+            set botDingTalkId(v) { self.botDingTalkId = v; },
+            robotName: () => this.cfg().robotName,
+        };
+    }
+
     private resolveQuotedMessage(payload: DingTalkRobotMessage): { nick: string; text: string } | null {
-        const reply = payload.text?.repliedMsg;
-        const quotedText = reply?.content?.text;
-        if (typeof quotedText === 'string' && quotedText.trim()) {
-            // repliedMsg.senderId 不是显示名；不猜作者昵称，也不赋予引用内容指令权限。
-            return { nick: '', text: quotedText };
-        }
-
-        const quotedId = payload.originalMsgId || reply?.msgId;
-        if (quotedId) {
-            const cached = this.msgCache.get(`${payload.conversationId}:${quotedId}`);
-            if (cached) return { nick: cached.nick, text: cached.text };
-        }
-
-        return quotedId || reply || payload.text?.isReplyMsg || payload.content?.isReplyMsg
-            ? { nick: '', text: '' }
-            : null;
+        return resolveQuotedMessage(payload, this.parserEnv());
     }
 
     private extractText(payload: DingTalkRobotMessage): string {
-        const type = payload.msgtype;
-        let text = '';
-
-        if (type === 'text') {
-            text = String(payload.text?.content ?? '');
-        } else if (type === 'richText') {
-            text = String(payload.content?.richText ?? '');
-        } else if (type === 'picture' || type === 'image') {
-            return '[用户发来一张图片，当前版本暂不支持图片识别]';
-        } else if (type === 'audio' || type === 'voice') {
-            return '[用户发来语音，当前版本暂不支持语音识别]';
-        } else if (type === 'file') {
-            return '[用户发来文件，当前版本暂不支持附件读取]';
-        } else {
-            return `[收到暂不支持的钉钉消息类型：${type}]`;
-        }
-
-        /* 保留一份原始文本，剥离后若为空就用它兜底（例如只发了个 @豆豆） */
-        const original = text;
-
-        /* 被 @ 的人已由 extractMentionedPeople 单独传给模型，这里从正文剥离避免重复 */
-        const mentioned = this.extractMentionedPeople(payload);
-
-        for (const person of mentioned) {
-            const escaped = person.name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-            text = text.replace(new RegExp(`@${escaped}`, 'g'), ' ');
-        }
-
-        /* 剥掉机器人自己被 @ 的残留（@豆豆 / @豆豆@1234） */
-        text = text.replace(/@[^@\s]{1,20}?(?=\s|$)/g, (match) => {
-            const name = match.slice(1);
-            if (mentioned.some((p) => p.name === name)) return match; /* 已处理过 */
-            return ' ';
-        });
-
-        const cleaned = text.replace(/[ \t]+/g, ' ').trim();
-
-        /*
-         * 引用消息场景：用户点"引用"再 @机器人，正文可能只有 @豆豆，
-         * 剥离后为空。此时不能判定为"空消息"丢弃，要给个占位让模型继续处理。
-         */
-        if (!cleaned) {
-            const hasReply = Boolean(payload.originalMsgId || payload.text?.repliedMsg ||
-                payload.text?.isReplyMsg || payload.content?.isReplyMsg);
-            if (hasReply) return '[用户引用了一条消息并 @ 了你，但没有附带文字]';
-            if (original.trim()) return original.trim();
-            return '';
-        }
-
-        return cleaned;
+        return extractText(payload, this.parserEnv());
     }
 
-    /**
-     * 提取被 @ 的其他人（排除机器人自己），供模型了解"在跟谁说话"。
-     */
-    private extractMentionedPeople(payload: DingTalkRobotMessage): Array<{ name: string; dintalkId?: string }> {
-        const botId = payload.chatbotUserId;
-        const atUsers = payload.atUsers ?? [];
-
-        /*
-         * 机器人自己的昵称：钉钉不给，只能从场景推断。
-         * 优先用配置的 robotName；否则取 atUsers 里 dingtalkId === chatbotUserId 那一项的 name。
-         */
-        let botName = this.botName || this.cfg().robotName || undefined;
-        if (!botName && botId) {
-            const self = atUsers.find((u) => u.dingtalkId === botId && u.name);
-            if (self?.name) botName = this.botName = self.name;
-        }
-
-        /*
-         * 部分已观察消息的 atUsers 仅含机器人且缺少 name，不能据此概括所有场景。
-         * 优先使用有名称的结构化提及，文本解析作为展示信息补充。
-         */
-        const curated = atUsers
-            .filter((u) => {
-                if (!u?.name) return false;
-                if (u.dingtalkId && botId && u.dingtalkId === botId) return false;
-                if (botName && u.name === botName) return false;
-                return true;
-            })
-            .map((u) => ({ name: u.name as string, dintalkId: u.dingtalkId }));
-
-        /* 从原始文本里解析 @名字（含跨企业场景） */
-        const raw =
-            payload.msgtype === 'richText'
-                ? String(payload.content?.richText ?? '')
-                : String(payload.text?.content ?? '');
-
-        const names = new Set<string>(curated.map((c) => c.name));
-        /*
-         * 匹配 @名字，兼容两种写法：
-         *   "@冇 很调皮"        -> 冇
-         *   "@冇@1234 很调皮"   -> 冇（后面的 @数字 是钉钉内部后缀）
-         */
-        const re = /@([^@\s]{1,20})/g;
-        let m: RegExpExecArray | null;
-        while ((m = re.exec(raw)) !== null) {
-            let name = m[1].trim();
-            /* 去掉钉钉附加的数字后缀，如 "冇@1234" 已在正则里分开，这里兜底 */
-            name = name.replace(/[,，:：。.!！?？]+$/, '').trim();
-            if (!name) continue;
-            if (/^\d+$/.test(name)) continue;
-            if (botName && name === botName) continue;
-            if (this.botDingTalkId && name === this.botDingTalkId) continue;
-            names.add(name);
-        }
-
-        return Array.from(names).map((name) => ({ name }));
+    private extractMentionedPeople(payload: DingTalkRobotMessage) {
+        return extractMentionedPeople(payload, this.parserEnv());
     }
 
     /* ============================================================ */

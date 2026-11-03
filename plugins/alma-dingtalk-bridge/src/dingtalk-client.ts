@@ -5,16 +5,15 @@
  * 主动发消息（心跳/通知）需要 appKey/appSecret 换 access_token，
  * 这里实现了 token 缓存与主动发送。
  */
-import * as fs from 'node:fs';
 import { dataPaths } from './paths.mjs';
-import * as path from 'node:path';
+import { appendPrivate, DEFAULT_RETENTION_DAYS } from './archive';
 import type { SendResult } from './types';
 import type { OutboundImage } from './media';
 
 export interface DingTalkLogger {
-    info: (...a: unknown[]) => void;
-    warn: (...a: unknown[]) => void;
-    error: (...a: unknown[]) => void;
+    info: (message: string, ...a: unknown[]) => void;
+    warn: (message: string, ...a: unknown[]) => void;
+    error: (message: string, ...a: unknown[]) => void;
 }
 
 /** 单条消息上限，留出余量 */
@@ -31,6 +30,8 @@ export class DingTalkClient {
         private readonly credentials: () => { clientId: string; clientSecret: string; robotCode: string },
         private readonly logger: DingTalkLogger,
         private readonly storagePath?: string,
+        private readonly archive: () => { enabled: boolean; retentionDays: number } =
+            () => ({ enabled: true, retentionDays: DEFAULT_RETENTION_DAYS }),
     ) {}
 
     /* ---------------- 归档 ---------------- */
@@ -41,16 +42,11 @@ export class DingTalkClient {
         try {
             // Standalone clients without a storage context do not write runtime archives.
             if (!this.storagePath) return;
-            const dir = dataPaths(this.storagePath).logs;
-            if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
-
-            const day = new Date().toISOString().slice(0, 10);
-            const file = path.join(dir, `dingtalk-payloads-${day}.jsonl`);
-
-            fs.appendFileSync(file, `${JSON.stringify({ at: new Date().toISOString(), ...record })}\n`, { mode: 0o600 });
-            fs.chmodSync(file, 0o600);
-        } catch {
-            /* 归档失败不影响发送 */
+            const { enabled, retentionDays } = this.archive();
+            if (!enabled) return;
+            appendPrivate(dataPaths(this.storagePath).logs, { at: new Date().toISOString(), ...record }, retentionDays);
+        } catch (e) {
+            this.logger.warn('出站归档失败', e instanceof Error ? e.message : 'unknown');
         }
     }
 

@@ -8,12 +8,13 @@
 import * as fs from 'node:fs';
 import { dataPaths } from './paths.mjs';
 import * as path from 'node:path';
+import { pruneOld } from './archive';
 
 export interface HostLogger {
-    info: (...a: unknown[]) => void;
-    warn: (...a: unknown[]) => void;
-    error: (...a: unknown[]) => void;
-    debug?: (...a: unknown[]) => void;
+    info: (message: string, ...a: unknown[]) => void;
+    warn: (message: string, ...a: unknown[]) => void;
+    error: (message: string, ...a: unknown[]) => void;
+    debug?: (message: string, ...a: unknown[]) => void;
 }
 
 export interface Logger extends HostLogger {
@@ -61,10 +62,12 @@ export function createLogger(host: HostLogger, storagePath?: string): Logger {
         if (!ready && !ensureDir()) return;
         try {
             const file = fileFor();
-            /* 超限后简单截断，避免无限增长 */
+            /* 超限后滚动成 .1（只保留一份旧文件），不丢掉刚发生的现场 */
             if (fs.existsSync(file) && fs.statSync(file).size > MAX_FILE_BYTES) {
-                fs.writeFileSync(file, '', { mode: 0o600 });
+                fs.renameSync(file, `${file}.1`);
+                fs.chmodSync(`${file}.1`, 0o600);
             }
+            pruneOld(dir, 7);
             currentFile = file;
             const line = `${new Date().toISOString()} [${level}] ${args.map(format).join(' ')}\n`;
             fs.appendFileSync(file, line, { mode: 0o600 });
@@ -74,21 +77,21 @@ export function createLogger(host: HostLogger, storagePath?: string): Logger {
     };
 
     return {
-        info: (...a: unknown[]) => {
-            write('INFO', a);
-            host.info(...a);
+        info: (message: string, ...rest: unknown[]) => {
+            write('INFO', [message, ...rest]);
+            host.info(message, ...rest);
         },
-        warn: (...a: unknown[]) => {
-            write('WARN', a);
-            host.warn(...a);
+        warn: (message: string, ...rest: unknown[]) => {
+            write('WARN', [message, ...rest]);
+            host.warn(message, ...rest);
         },
-        error: (...a: unknown[]) => {
-            write('ERROR', a);
-            host.error(...a);
+        error: (message: string, ...rest: unknown[]) => {
+            write('ERROR', [message, ...rest]);
+            host.error(message, ...rest);
         },
-        debug: (...a: unknown[]) => {
-            write('DEBUG', a);
-            host.debug?.(...a);
+        debug: (message: string, ...rest: unknown[]) => {
+            write('DEBUG', [message, ...rest]);
+            host.debug?.(message, ...rest);
         },
         filePath: () => currentFile || (ready ? fileFor() : path.join(dir, 'dingtalk-bridge-YYYY-MM-DD.log')),
     };

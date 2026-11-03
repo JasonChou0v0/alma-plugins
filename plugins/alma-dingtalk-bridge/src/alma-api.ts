@@ -12,9 +12,9 @@
 import type { AlmaThread, AlmaWorkspace } from './types';
 
 export interface AlmaApiLogger {
-    info: (...a: unknown[]) => void;
-    warn: (...a: unknown[]) => void;
-    error: (...a: unknown[]) => void;
+    info: (message: string, ...a: unknown[]) => void;
+    warn: (message: string, ...a: unknown[]) => void;
+    error: (message: string, ...a: unknown[]) => void;
 }
 
 export class AlmaApi {
@@ -96,7 +96,8 @@ export class AlmaApi {
         try {
             const list = await this.getWorkspaces();
             return list[0]?.id;
-        } catch {
+        } catch (e) {
+            this.logger.warn('获取工作区列表失败', e instanceof Error ? e.name : 'unknown');
             return undefined;
         }
     }
@@ -106,7 +107,8 @@ export class AlmaApi {
         try {
             const r = await fetch(`${this.baseUrl()}/api/health`);
             return r.ok;
-        } catch {
+        } catch (e) {
+            this.logger.warn('Alma 健康检查失败', e instanceof Error ? e.name : 'unknown');
             return false;
         }
     }

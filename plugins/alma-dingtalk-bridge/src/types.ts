@@ -28,6 +28,8 @@ export interface BridgeConfig {
     replyOnToolUse: boolean;
     /** 记录完整原始载荷，用于排查字段名 */
     logRawPayload: boolean;
+    /** 原始载荷归档保留天数，默认 7 */
+    rawPayloadRetentionDays?: number;
     /**
      * 群聊（conversationType=2）里是否允许驱动带工具的 agent 回合。
      * - refuse（默认）：拒绝群 agent 任务并解释，不提交 generate_response——唯一安全选项
@@ -131,6 +133,8 @@ export interface SendResult {
 
 /** 钉钉下游事件里的机器消息体 */
 export interface DingTalkRobotMessage {
+    senderCorpId?: string;
+    chatbotCorpId?: string;
     conversationId: string;
     conversationType: string;
     conversationTitle?: string;

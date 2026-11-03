@@ -14651,9 +14651,6 @@ var require_follow_redirects = __commonJS((exports, module) => {
   module.exports.wrap = wrap;
 });
 
-// src/bridge.ts
-import * as fs2 from "node:fs";
-
 // src/paths.mjs
 import * as os from "node:os";
 import * as path from "node:path";
@@ -14670,9 +14667,6 @@ function dataPaths(storagePath = defaultDataDir()) {
     snapshot: path.join(root, "dashboard", "data.json")
   };
 }
-
-// src/bridge.ts
-import * as path3 from "node:path";
 
 // node_modules/dingtalk-stream/dist/constants.mjs
 var GATEWAY_URL = "https://api.dingtalk.com/v1.0/gateway/connections/open";
@@ -20825,7 +20819,8 @@ class AlmaApi {
     try {
       const list = await this.getWorkspaces();
       return list[0]?.id;
-    } catch {
+    } catch (e) {
+      this.logger.warn("获取工作区列表失败", e instanceof Error ? e.name : "unknown");
       return;
     }
   }
@@ -20833,7 +20828,8 @@ class AlmaApi {
     try {
       const r = await fetch(`${this.baseUrl()}/api/health`);
       return r.ok;
-    } catch {
+    } catch (e) {
+      this.logger.warn("Alma 健康检查失败", e instanceof Error ? e.name : "unknown");
       return false;
     }
   }
@@ -20896,6 +20892,150 @@ async function loadAlmaImage(attachment, port) {
   if (!detected || detected !== attachment.mediaType)
     throw new Error("图片内容与声明格式不符");
   return { bytes, mediaType: detected, filename: "image." + { "image/png": "png", "image/jpeg": "jpg", "image/gif": "gif", "image/bmp": "bmp" }[detected] };
+}
+
+// src/archive.ts
+import * as fs from "node:fs";
+import * as path2 from "node:path";
+var DEFAULT_RETENTION_DAYS = 7;
+var LOG_RETENTION_DAYS = 14;
+var pruned = new Map;
+function redactSecrets(value) {
+  if (Array.isArray(value))
+    return value.map(redactSecrets);
+  if (value && typeof value === "object") {
+    const out = {};
+    for (const [k, v] of Object.entries(value)) {
+      out[k] = /webhook|access_?token|secret/i.test(k) && typeof v === "string" ? "[redacted]" : redactSecrets(v);
+    }
+    return out;
+  }
+  return value;
+}
+function pruneOld(dir, retentionDays, now = new Date) {
+  const today = now.toISOString().slice(0, 10);
+  if (pruned.get(dir) === today)
+    return 0;
+  pruned.set(dir, today);
+  let removed = 0;
+  try {
+    for (const name of fs.readdirSync(dir)) {
+      const m = name.match(/^(dingtalk-payloads|dingtalk-bridge)-(\d{4}-\d{2}-\d{2})\.(jsonl|log)(\.1)?$/);
+      if (!m)
+        continue;
+      const keep = m[1] === "dingtalk-payloads" ? retentionDays : LOG_RETENTION_DAYS;
+      const ageDays = (Date.parse(today) - Date.parse(m[2])) / 86400000;
+      if (ageDays > keep) {
+        try {
+          fs.unlinkSync(path2.join(dir, name));
+          removed++;
+        } catch {}
+      }
+    }
+  } catch {}
+  return removed;
+}
+function appendPrivate(dir, record, retentionDays = DEFAULT_RETENTION_DAYS) {
+  if (!fs.existsSync(dir))
+    fs.mkdirSync(dir, { recursive: true, mode: 448 });
+  pruneOld(dir, retentionDays);
+  const day = new Date().toISOString().slice(0, 10);
+  const file = path2.join(dir, `dingtalk-payloads-${day}.jsonl`);
+  fs.appendFileSync(file, `${JSON.stringify(redactSecrets(record))}
+`, { mode: 384 });
+  fs.chmodSync(file, 384);
+}
+
+// src/message-parser.ts
+function resolveQuotedMessage(payload, env) {
+  const reply = payload.text?.repliedMsg;
+  const quotedText = reply?.content?.text;
+  if (typeof quotedText === "string" && quotedText.trim()) {
+    return { nick: "", text: quotedText };
+  }
+  const quotedId = payload.originalMsgId || reply?.msgId;
+  if (quotedId) {
+    const cached = env.msgCache.get(`${payload.conversationId}:${quotedId}`);
+    if (cached)
+      return { nick: cached.nick, text: cached.text };
+  }
+  return quotedId || reply || payload.text?.isReplyMsg || payload.content?.isReplyMsg ? { nick: "", text: "" } : null;
+}
+function extractText(payload, env) {
+  const type = payload.msgtype;
+  let text = "";
+  if (type === "text") {
+    text = String(payload.text?.content ?? "");
+  } else if (type === "richText") {
+    text = String(payload.content?.richText ?? "");
+  } else if (type === "picture" || type === "image") {
+    return "[用户发来一张图片，当前版本暂不支持图片识别]";
+  } else if (type === "audio" || type === "voice") {
+    return "[用户发来语音，当前版本暂不支持语音识别]";
+  } else if (type === "file") {
+    return "[用户发来文件，当前版本暂不支持附件读取]";
+  } else {
+    return `[收到暂不支持的钉钉消息类型：${type}]`;
+  }
+  const original = text;
+  const mentioned = extractMentionedPeople(payload, env);
+  for (const person of mentioned) {
+    const escaped = person.name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    text = text.replace(new RegExp(`@${escaped}`, "g"), " ");
+  }
+  text = text.replace(/@[^@\s]{1,20}?(?=\s|$)/g, (match) => {
+    const name = match.slice(1);
+    if (mentioned.some((p) => p.name === name))
+      return match;
+    return " ";
+  });
+  const cleaned = text.replace(/[ \t]+/g, " ").trim();
+  if (!cleaned) {
+    const hasReply = Boolean(payload.originalMsgId || payload.text?.repliedMsg || payload.text?.isReplyMsg || payload.content?.isReplyMsg);
+    if (hasReply)
+      return "[用户引用了一条消息并 @ 了你，但没有附带文字]";
+    if (original.trim())
+      return original.trim();
+    return "";
+  }
+  return cleaned;
+}
+function extractMentionedPeople(payload, env) {
+  const botId = payload.chatbotUserId;
+  const atUsers = payload.atUsers ?? [];
+  let botName = env.botName || env.robotName() || undefined;
+  if (!botName && botId) {
+    const self2 = atUsers.find((u) => u.dingtalkId === botId && u.name);
+    if (self2?.name)
+      botName = env.botName = self2.name;
+  }
+  const curated = atUsers.filter((u) => {
+    if (!u?.name)
+      return false;
+    if (u.dingtalkId && botId && u.dingtalkId === botId)
+      return false;
+    if (botName && u.name === botName)
+      return false;
+    return true;
+  }).map((u) => ({ name: u.name, dintalkId: u.dingtalkId }));
+  const raw = payload.msgtype === "richText" ? String(payload.content?.richText ?? "") : String(payload.text?.content ?? "");
+  const names = new Set(curated.map((c) => c.name));
+  const re = /@([^@\s]{1,20})/g;
+  let m;
+  while ((m = re.exec(raw)) !== null) {
+    let name = m[1].trim();
+    name = name.replace(/[,，:：。.!！?？]+$/, "").trim();
+    if (!name)
+      continue;
+    if (/^\d+$/.test(name))
+      continue;
+    if (botName && name === botName)
+      continue;
+    if (env.botDingTalkId && name === env.botDingTalkId)
+      continue;
+    names.add(name);
+  }
+  return Array.from(names).map((name) => ({ name }));
 }
 
 // src/authorization.ts
@@ -21036,7 +21176,9 @@ async function resolveWebSocketCtor() {
     const Ctor = mod?.default ?? mod?.WebSocket ?? mod;
     if (typeof Ctor === "function")
       return Ctor;
-  } catch {}
+  } catch (e) {
+    console.warn("加载 ws 包失败，回退全局 WebSocket：", e instanceof Error ? e.name : "unknown");
+  }
   const g = globalThis;
   if (typeof g.WebSocket === "function")
     return g.WebSocket;
@@ -21131,7 +21273,8 @@ class AlmaSocket {
           let msg;
           try {
             msg = JSON.parse(raw);
-          } catch {
+          } catch (e) {
+            this.logger.warn("Alma WebSocket 消息解析失败，已忽略", e instanceof Error ? e.name : "unknown");
             return;
           }
           this.dispatch(msg);
@@ -21443,8 +21586,6 @@ class AlmaSocket {
 }
 
 // src/dingtalk-client.ts
-import * as fs from "node:fs";
-import * as path2 from "node:path";
 var MAX_CHUNK = 4000;
 var TOKEN_URL = "https://api.dingtalk.com/v1.0/oauth2/accessToken";
 var SEND_URL = "https://api.dingtalk.com/v1.0/robot/oToMessages/batchSend";
@@ -21454,26 +21595,26 @@ class DingTalkClient {
   credentials;
   logger;
   storagePath;
+  archive;
   token = null;
   tokenExpiry = 0;
-  constructor(credentials, logger, storagePath) {
+  constructor(credentials, logger, storagePath, archive = () => ({ enabled: true, retentionDays: DEFAULT_RETENTION_DAYS })) {
     this.credentials = credentials;
     this.logger = logger;
     this.storagePath = storagePath;
+    this.archive = archive;
   }
   archiveOutbound(record) {
     try {
       if (!this.storagePath)
         return;
-      const dir = dataPaths(this.storagePath).logs;
-      if (!fs.existsSync(dir))
-        fs.mkdirSync(dir, { recursive: true, mode: 448 });
-      const day = new Date().toISOString().slice(0, 10);
-      const file = path2.join(dir, `dingtalk-payloads-${day}.jsonl`);
-      fs.appendFileSync(file, `${JSON.stringify({ at: new Date().toISOString(), ...record })}
-`, { mode: 384 });
-      fs.chmodSync(file, 384);
-    } catch {}
+      const { enabled, retentionDays } = this.archive();
+      if (!enabled)
+        return;
+      appendPrivate(dataPaths(this.storagePath).logs, { at: new Date().toISOString(), ...record }, retentionDays);
+    } catch (e) {
+      this.logger.warn("出站归档失败", e instanceof Error ? e.message : "unknown");
+    }
   }
   clearToken() {
     this.token = null;
@@ -21859,7 +22000,10 @@ class DingTalkBridge {
         clientSecret: this.secretClientSecret || "",
         robotCode: c.robotCode || c.clientId
       };
-    }, this.ctx.logger, this.ctx.storagePath);
+    }, this.ctx.logger, this.ctx.storagePath, () => {
+      const c = this.cfg();
+      return { enabled: Boolean(c.logRawPayload), retentionDays: c.rawPayloadRetentionDays ?? DEFAULT_RETENTION_DAYS };
+    });
     this.socket = new AlmaSocket(() => `ws://127.0.0.1:${this.cfg().almaApiPort}/ws/threads`, this.ctx.logger, {
       onTextDelta: (turn, _text) => {
         if (this.cfg().streamingReply)
@@ -22351,8 +22495,9 @@ class DingTalkBridge {
     if (msgId) {
       const now = Date.now();
       for (const [id, ts] of this.seenMsgIds) {
-        if (now - ts > 300000)
-          this.seenMsgIds.delete(id);
+        if (now - ts <= 300000)
+          break;
+        this.seenMsgIds.delete(id);
       }
       if (this.seenMsgIds.has(msgId)) {
         this.ctx.logger.info("重复消息，跳过", msgId);
@@ -22413,10 +22558,11 @@ class DingTalkBridge {
         text: this.extractText(payload).slice(0, 500),
         at: Date.now()
       });
-      if (this.msgCache.size > 500) {
-        const oldest = [...this.msgCache.entries()].sort((a, b) => a[1].at - b[1].at)[0];
-        if (oldest)
-          this.msgCache.delete(oldest[0]);
+      while (this.msgCache.size > 500) {
+        const oldest = this.msgCache.keys().next().value;
+        if (oldest === undefined)
+          break;
+        this.msgCache.delete(oldest);
       }
     }
     const cmdProbe = text.replace(/^[@\s,，:：]+/, "");
@@ -22549,111 +22695,42 @@ class DingTalkBridge {
       const dir = this.logDir;
       if (!dir)
         return;
-      if (!fs2.existsSync(dir))
-        fs2.mkdirSync(dir, { recursive: true, mode: 448 });
-      const day = new Date().toISOString().slice(0, 10);
-      const file = path3.join(dir, `dingtalk-payloads-${day}.jsonl`);
-      const record = {
+      appendPrivate(dir, {
         receivedAt: new Date().toISOString(),
         headers: downstream?.headers ?? null,
         payload
-      };
-      fs2.appendFileSync(file, `${JSON.stringify(record)}
-`, { mode: 384 });
-      fs2.chmodSync(file, 384);
+      }, this.cfg().rawPayloadRetentionDays ?? DEFAULT_RETENTION_DAYS);
     } catch (e) {
-      this.ctx.logger.warn("归档原始载荷失败", e);
+      this.ctx.logger.warn("归档原始载荷失败", e instanceof Error ? e.message : "unknown");
     }
+  }
+  parserEnv() {
+    const self2 = this;
+    return {
+      msgCache: this.msgCache,
+      get botName() {
+        return self2.botName;
+      },
+      set botName(v) {
+        self2.botName = v;
+      },
+      get botDingTalkId() {
+        return self2.botDingTalkId;
+      },
+      set botDingTalkId(v) {
+        self2.botDingTalkId = v;
+      },
+      robotName: () => this.cfg().robotName
+    };
   }
   resolveQuotedMessage(payload) {
-    const reply = payload.text?.repliedMsg;
-    const quotedText = reply?.content?.text;
-    if (typeof quotedText === "string" && quotedText.trim()) {
-      return { nick: "", text: quotedText };
-    }
-    const quotedId = payload.originalMsgId || reply?.msgId;
-    if (quotedId) {
-      const cached = this.msgCache.get(`${payload.conversationId}:${quotedId}`);
-      if (cached)
-        return { nick: cached.nick, text: cached.text };
-    }
-    return quotedId || reply || payload.text?.isReplyMsg || payload.content?.isReplyMsg ? { nick: "", text: "" } : null;
+    return resolveQuotedMessage(payload, this.parserEnv());
   }
   extractText(payload) {
-    const type = payload.msgtype;
-    let text = "";
-    if (type === "text") {
-      text = String(payload.text?.content ?? "");
-    } else if (type === "richText") {
-      text = String(payload.content?.richText ?? "");
-    } else if (type === "picture" || type === "image") {
-      return "[用户发来一张图片，当前版本暂不支持图片识别]";
-    } else if (type === "audio" || type === "voice") {
-      return "[用户发来语音，当前版本暂不支持语音识别]";
-    } else if (type === "file") {
-      return "[用户发来文件，当前版本暂不支持附件读取]";
-    } else {
-      return `[收到暂不支持的钉钉消息类型：${type}]`;
-    }
-    const original = text;
-    const mentioned = this.extractMentionedPeople(payload);
-    for (const person of mentioned) {
-      const escaped = person.name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-      text = text.replace(new RegExp(`@${escaped}`, "g"), " ");
-    }
-    text = text.replace(/@[^@\s]{1,20}?(?=\s|$)/g, (match) => {
-      const name = match.slice(1);
-      if (mentioned.some((p) => p.name === name))
-        return match;
-      return " ";
-    });
-    const cleaned = text.replace(/[ \t]+/g, " ").trim();
-    if (!cleaned) {
-      const hasReply = Boolean(payload.originalMsgId || payload.text?.repliedMsg || payload.text?.isReplyMsg || payload.content?.isReplyMsg);
-      if (hasReply)
-        return "[用户引用了一条消息并 @ 了你，但没有附带文字]";
-      if (original.trim())
-        return original.trim();
-      return "";
-    }
-    return cleaned;
+    return extractText(payload, this.parserEnv());
   }
   extractMentionedPeople(payload) {
-    const botId = payload.chatbotUserId;
-    const atUsers = payload.atUsers ?? [];
-    let botName = this.botName || this.cfg().robotName || undefined;
-    if (!botName && botId) {
-      const self2 = atUsers.find((u) => u.dingtalkId === botId && u.name);
-      if (self2?.name)
-        botName = this.botName = self2.name;
-    }
-    const curated = atUsers.filter((u) => {
-      if (!u?.name)
-        return false;
-      if (u.dingtalkId && botId && u.dingtalkId === botId)
-        return false;
-      if (botName && u.name === botName)
-        return false;
-      return true;
-    }).map((u) => ({ name: u.name, dintalkId: u.dingtalkId }));
-    const raw = payload.msgtype === "richText" ? String(payload.content?.richText ?? "") : String(payload.text?.content ?? "");
-    const names = new Set(curated.map((c) => c.name));
-    const re = /@([^@\s]{1,20})/g;
-    let m;
-    while ((m = re.exec(raw)) !== null) {
-      let name = m[1].trim();
-      name = name.replace(/[,，:：。.!！?？]+$/, "").trim();
-      if (!name)
-        continue;
-      if (/^\d+$/.test(name))
-        continue;
-      if (botName && name === botName)
-        continue;
-      if (this.botDingTalkId && name === this.botDingTalkId)
-        continue;
-      names.add(name);
-    }
-    return Array.from(names).map((name) => ({ name }));
+    return extractMentionedPeople(payload, this.parserEnv());
   }
   async runCommand(cmd, args, chatId, senderId, webhook) {
     const config = this.cfg();
@@ -22822,8 +22899,8 @@ class DingTalkBridge {
 }
 
 // src/log.ts
-import * as fs3 from "node:fs";
-import * as path4 from "node:path";
+import * as fs2 from "node:fs";
+import * as path3 from "node:path";
 var MAX_FILE_BYTES = 5 * 1024 * 1024;
 function format(value) {
   if (typeof value === "string")
@@ -22845,8 +22922,8 @@ function createLogger(host, storagePath) {
     if (dirError)
       return false;
     try {
-      if (!fs3.existsSync(dir))
-        fs3.mkdirSync(dir, { recursive: true, mode: 448 });
+      if (!fs2.existsSync(dir))
+        fs2.mkdirSync(dir, { recursive: true, mode: 448 });
       ready = true;
       return true;
     } catch (e) {
@@ -22856,40 +22933,42 @@ function createLogger(host, storagePath) {
   };
   const fileFor = () => {
     const day = new Date().toISOString().slice(0, 10);
-    return path4.join(dir, `dingtalk-bridge-${day}.log`);
+    return path3.join(dir, `dingtalk-bridge-${day}.log`);
   };
   const write = (level, args) => {
     if (!ready && !ensureDir())
       return;
     try {
       const file = fileFor();
-      if (fs3.existsSync(file) && fs3.statSync(file).size > MAX_FILE_BYTES) {
-        fs3.writeFileSync(file, "", { mode: 384 });
+      if (fs2.existsSync(file) && fs2.statSync(file).size > MAX_FILE_BYTES) {
+        fs2.renameSync(file, `${file}.1`);
+        fs2.chmodSync(`${file}.1`, 384);
       }
+      pruneOld(dir, 7);
       currentFile = file;
       const line = `${new Date().toISOString()} [${level}] ${args.map(format).join(" ")}
 `;
-      fs3.appendFileSync(file, line, { mode: 384 });
+      fs2.appendFileSync(file, line, { mode: 384 });
     } catch {}
   };
   return {
-    info: (...a) => {
-      write("INFO", a);
-      host.info(...a);
+    info: (message, ...rest) => {
+      write("INFO", [message, ...rest]);
+      host.info(message, ...rest);
     },
-    warn: (...a) => {
-      write("WARN", a);
-      host.warn(...a);
+    warn: (message, ...rest) => {
+      write("WARN", [message, ...rest]);
+      host.warn(message, ...rest);
     },
-    error: (...a) => {
-      write("ERROR", a);
-      host.error(...a);
+    error: (message, ...rest) => {
+      write("ERROR", [message, ...rest]);
+      host.error(message, ...rest);
     },
-    debug: (...a) => {
-      write("DEBUG", a);
-      host.debug?.(...a);
+    debug: (message, ...rest) => {
+      write("DEBUG", [message, ...rest]);
+      host.debug?.(message, ...rest);
     },
-    filePath: () => currentFile || (ready ? fileFor() : path4.join(dir, "dingtalk-bridge-YYYY-MM-DD.log"))
+    filePath: () => currentFile || (ready ? fileFor() : path3.join(dir, "dingtalk-bridge-YYYY-MM-DD.log"))
   };
 }
 
@@ -22931,7 +23010,8 @@ async function activate(context) {
       adminUnionIds: rawAdmin.split(",").map((s) => s.trim()).filter(Boolean),
       streamingReply: Boolean(get("streamingReply", false)),
       replyOnToolUse: Boolean(get("replyOnToolUse", true)),
-      logRawPayload: Boolean(get("logRawPayload", true)),
+      logRawPayload: Boolean(get("logRawPayload", false)),
+      rawPayloadRetentionDays: Math.min(90, Math.max(1, Math.floor(Number(get("rawPayloadRetentionDays", 7))) || 7)),
       groupAgentPolicy: rawPolicy === "fullTools" ? "fullTools" : "refuse",
       clientSecretSecretKey: String(get("clientSecretSecretKey", "dingtalk.clientSecret") ?? "dingtalk.clientSecret").trim()
     };
