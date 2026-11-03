@@ -127,7 +127,22 @@ export class AlmaSocket {
     private readonly turns = new Map<string, TurnState>();
     private readonly deadlines = new Map<string, ReturnType<typeof setTimeout>>();
     private readonly pendingStops = new Set<string>();
+    /** 状态不确定的线程；bridge 会换新线程，所以只保留最近的一批，避免无限增长。 */
     private readonly quarantined = new Set<string>();
+    private static readonly QUARANTINE_LIMIT = 200;
+    private quarantine(threadId: string): void {
+        this.quarantined.delete(threadId);
+        this.quarantined.add(threadId);
+        while (this.quarantined.size > AlmaSocket.QUARANTINE_LIMIT) {
+            const oldest = this.quarantined.values().next().value;
+            if (oldest === undefined) break;
+            this.quarantined.delete(oldest);
+        }
+    }
+    /** 线程被删除或会话被重置后，隔离记录不再有意义。 */
+    forgetThread(threadId: string): void {
+        this.quarantined.delete(threadId);
+    }
 
     resume(): void { this.stopped = false; }
 
@@ -484,7 +499,7 @@ export class AlmaSocket {
             );
         } catch (e) {
             /* 发送失败必须清理，否则 isRunning 会永远为 true，后续消息全被卡住 */
-            this.quarantined.add(turn.threadId);
+            this.quarantine(turn.threadId);
             this.pendingStops.add(turn.threadId);
             this.release(turn.threadId);
             throw e;
@@ -511,7 +526,7 @@ export class AlmaSocket {
 
     private failTurn(turn: TurnState, message: string): void {
         if (turn.finished) return;
-        this.quarantined.add(turn.threadId);
+        this.quarantine(turn.threadId);
         this.pendingStops.add(turn.threadId);
         try { if (this.stop(turn.threadId)) this.pendingStops.delete(turn.threadId); } catch {}
         turn.finished = true;

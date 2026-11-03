@@ -21212,6 +21212,20 @@ class AlmaSocket {
   deadlines = new Map;
   pendingStops = new Set;
   quarantined = new Set;
+  static QUARANTINE_LIMIT = 200;
+  quarantine(threadId) {
+    this.quarantined.delete(threadId);
+    this.quarantined.add(threadId);
+    while (this.quarantined.size > AlmaSocket.QUARANTINE_LIMIT) {
+      const oldest = this.quarantined.values().next().value;
+      if (oldest === undefined)
+        break;
+      this.quarantined.delete(oldest);
+    }
+  }
+  forgetThread(threadId) {
+    this.quarantined.delete(threadId);
+  }
   resume() {
     this.stopped = false;
   }
@@ -21510,7 +21524,7 @@ class AlmaSocket {
         }
       }));
     } catch (e) {
-      this.quarantined.add(turn.threadId);
+      this.quarantine(turn.threadId);
       this.pendingStops.add(turn.threadId);
       this.release(turn.threadId);
       throw e;
@@ -21536,7 +21550,7 @@ class AlmaSocket {
   failTurn(turn, message) {
     if (turn.finished)
       return;
-    this.quarantined.add(turn.threadId);
+    this.quarantine(turn.threadId);
     this.pendingStops.add(turn.threadId);
     try {
       if (this.stop(turn.threadId))
@@ -21616,9 +21630,13 @@ class DingTalkClient {
       this.logger.warn("出站归档失败", e instanceof Error ? e.message : "unknown");
     }
   }
+  tokenInflight = null;
+  tokenEpoch = 0;
   clearToken() {
     this.token = null;
     this.tokenExpiry = 0;
+    this.tokenInflight = null;
+    this.tokenEpoch++;
   }
   static chunkParts(text, limit = MAX_CHUNK) {
     if (!text)
@@ -21789,13 +21807,24 @@ ${fence}` : ""), consumed });
       return { ok: false, error };
     }
   }
-  async getAccessToken() {
+  getAccessToken() {
     const { clientId, clientSecret } = this.credentials();
     if (!clientId || !clientSecret)
-      return null;
+      return Promise.resolve(null);
+    if (this.token && Date.now() < this.tokenExpiry - 60000)
+      return Promise.resolve(this.token);
+    if (this.tokenInflight)
+      return this.tokenInflight;
+    const epoch = this.tokenEpoch;
+    const task = this.fetchAccessToken(clientId, clientSecret, epoch).finally(() => {
+      if (this.tokenInflight === task)
+        this.tokenInflight = null;
+    });
+    this.tokenInflight = task;
+    return task;
+  }
+  async fetchAccessToken(clientId, clientSecret, epoch) {
     const now = Date.now();
-    if (this.token && now < this.tokenExpiry - 60000)
-      return this.token;
     try {
       const res = await fetch(TOKEN_URL, {
         method: "POST",
@@ -21810,32 +21839,61 @@ ${fence}` : ""), consumed });
       const data = await res.json();
       if (!data?.accessToken)
         return null;
-      this.token = data.accessToken;
-      this.tokenExpiry = now + (data.expireIn ?? 7200) * 1000;
-      return this.token;
+      if (epoch === this.tokenEpoch) {
+        this.token = data.accessToken;
+        this.tokenExpiry = now + (data.expireIn ?? 7200) * 1000;
+      }
+      return data.accessToken;
     } catch (e) {
       this.logger.warn("获取 accessToken 异常", e);
       return null;
     }
+  }
+  static isTokenRejected(status, body) {
+    return status === 401 || [40014, 42001, 40001].includes(Number(body?.errcode));
+  }
+  async withToken(run, noToken) {
+    for (let attempt = 0;attempt < 2; attempt++) {
+      const token = await this.getAccessToken();
+      if (!token)
+        return noToken;
+      const { value, rejected } = await run(token);
+      if (!rejected || attempt === 1)
+        return value;
+      this.logger.warn("accessToken 被钉钉拒绝，已清除缓存并重试一次");
+      this.clearToken();
+    }
+    return noToken;
   }
   async sendImage(target, image, authorized) {
     if (Boolean(target.conversationId) === Boolean(target.staffId))
       return { ok: false, error: "图片目标无效" };
     if (!authorized())
       return { ok: false, error: "图片目标或发送人已取消授权" };
-    const token = await this.getAccessToken();
+    let token = await this.getAccessToken();
     if (!token)
       return { ok: false, error: "图片上传凭据不可用" };
     try {
-      const form = new FormData;
-      form.set("media", new Blob([new Uint8Array(image.bytes)], { type: image.mediaType }), image.filename);
-      const upload = await fetch(`https://oapi.dingtalk.com/media/upload?access_token=${encodeURIComponent(token)}&type=image`, {
-        method: "POST",
-        body: form,
-        redirect: "error",
-        signal: AbortSignal.timeout(30000)
-      });
-      const media = await upload.json().catch(() => null);
+      const doUpload = async (t) => {
+        const form = new FormData;
+        form.set("media", new Blob([new Uint8Array(image.bytes)], { type: image.mediaType }), image.filename);
+        const response = await fetch(`https://oapi.dingtalk.com/media/upload?access_token=${encodeURIComponent(t)}&type=image`, {
+          method: "POST",
+          body: form,
+          redirect: "error",
+          signal: AbortSignal.timeout(30000)
+        });
+        return { response, body: await response.json().catch(() => null) };
+      };
+      let { response: upload, body: media } = await doUpload(token);
+      if (DingTalkClient.isTokenRejected(upload.status, media)) {
+        this.logger.warn("图片上传令牌被拒绝，已清除缓存并重试一次");
+        this.clearToken();
+        token = await this.getAccessToken();
+        if (!token)
+          return { ok: false, error: "图片上传凭据不可用" };
+        ({ response: upload, body: media } = await doUpload(token));
+      }
       if (!upload.ok || media?.errcode !== 0 || typeof media?.media_id !== "string" || !media.media_id) {
         return { ok: false, error: `钉钉图片上传失败（HTTP ${upload.status}）` };
       }
@@ -21868,18 +21926,29 @@ ${fence}` : ""), consumed });
   async sendToUnionUser(unionId, text, authorized) {
     if (!authorized())
       return { ok: false, error: "UnionID 未授权" };
-    const token = await this.getAccessToken();
+    let token = await this.getAccessToken();
     if (!token)
       return { ok: false, error: "未配置凭据或 token 获取失败" };
     try {
-      const res = await fetch(`https://oapi.dingtalk.com/topapi/user/getbyunionid?access_token=${encodeURIComponent(token)}`, {
-        method: "POST",
-        redirect: "error",
-        signal: AbortSignal.timeout(20000),
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ unionid: unionId })
-      });
-      const data = await res.json().catch(() => null);
+      const lookup = async (t) => {
+        const response = await fetch(`https://oapi.dingtalk.com/topapi/user/getbyunionid?access_token=${encodeURIComponent(t)}`, {
+          method: "POST",
+          redirect: "error",
+          signal: AbortSignal.timeout(20000),
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ unionid: unionId })
+        });
+        return { response, body: await response.json().catch(() => null) };
+      };
+      let { response: res, body: data } = await lookup(token);
+      if (DingTalkClient.isTokenRejected(res.status, data)) {
+        this.logger.warn("UnionID 查询令牌被拒绝，已清除缓存并重试一次");
+        this.clearToken();
+        token = await this.getAccessToken();
+        if (!token)
+          return { ok: false, error: "未配置凭据或 token 获取失败" };
+        ({ response: res, body: data } = await lookup(token));
+      }
       if (!res.ok || data?.errcode !== 0 || typeof data?.result?.userid !== "string" || !data.result.userid) {
         return { ok: false, error: "无法为该 UnionID 解析企业内投递地址；跨组织用户请在原会话互动，或检查成员信息读权限" };
       }
@@ -21892,61 +21961,59 @@ ${fence}` : ""), consumed });
   }
   async sendToUser(staffId, text) {
     const { robotCode } = this.credentials();
-    const token = await this.getAccessToken();
-    if (!token)
-      return { ok: false, error: "未配置凭据或 token 获取失败" };
-    try {
-      const res = await fetch(SEND_URL, {
-        method: "POST",
-        signal: AbortSignal.timeout(20000),
-        headers: {
-          "Content-Type": "application/json",
-          "x-acs-dingtalk-access-token": token
-        },
-        body: JSON.stringify({
-          robotCode,
-          userIds: [staffId],
-          msgKey: "sampleText",
-          msgParam: JSON.stringify({ content: text })
-        })
-      });
-      if (!res.ok) {
-        const body = await res.text().catch(() => "");
-        return { ok: false, error: `HTTP ${res.status} ${body.slice(0, 160)}` };
+    return this.withToken(async (token) => {
+      try {
+        const res = await fetch(SEND_URL, {
+          method: "POST",
+          signal: AbortSignal.timeout(20000),
+          headers: {
+            "Content-Type": "application/json",
+            "x-acs-dingtalk-access-token": token
+          },
+          body: JSON.stringify({
+            robotCode,
+            userIds: [staffId],
+            msgKey: "sampleText",
+            msgParam: JSON.stringify({ content: text })
+          })
+        });
+        if (!res.ok) {
+          const body = await res.text().catch(() => "");
+          return { value: { ok: false, error: `HTTP ${res.status} ${body.slice(0, 160)}` }, rejected: DingTalkClient.isTokenRejected(res.status) };
+        }
+        return { value: { ok: true }, rejected: false };
+      } catch (e) {
+        return { value: { ok: false, error: e instanceof Error ? e.message : String(e) }, rejected: false };
       }
-      return { ok: true };
-    } catch (e) {
-      return { ok: false, error: e instanceof Error ? e.message : String(e) };
-    }
+    }, { ok: false, error: "未配置凭据或 token 获取失败" });
   }
   async sendToGroup(conversationId, text) {
     const { robotCode } = this.credentials();
-    const token = await this.getAccessToken();
-    if (!token)
-      return { ok: false, error: "未配置凭据或 token 获取失败" };
-    try {
-      const res = await fetch(GROUP_SEND_URL, {
-        method: "POST",
-        signal: AbortSignal.timeout(20000),
-        headers: {
-          "Content-Type": "application/json",
-          "x-acs-dingtalk-access-token": token
-        },
-        body: JSON.stringify({
-          robotCode,
-          openConversationId: conversationId,
-          msgKey: "sampleText",
-          msgParam: JSON.stringify({ content: text })
-        })
-      });
-      if (!res.ok) {
-        const body = await res.text().catch(() => "");
-        return { ok: false, error: `HTTP ${res.status} ${body.slice(0, 160)}` };
+    return this.withToken(async (token) => {
+      try {
+        const res = await fetch(GROUP_SEND_URL, {
+          method: "POST",
+          signal: AbortSignal.timeout(20000),
+          headers: {
+            "Content-Type": "application/json",
+            "x-acs-dingtalk-access-token": token
+          },
+          body: JSON.stringify({
+            robotCode,
+            openConversationId: conversationId,
+            msgKey: "sampleText",
+            msgParam: JSON.stringify({ content: text })
+          })
+        });
+        if (!res.ok) {
+          const body = await res.text().catch(() => "");
+          return { value: { ok: false, error: `HTTP ${res.status} ${body.slice(0, 160)}` }, rejected: DingTalkClient.isTokenRejected(res.status) };
+        }
+        return { value: { ok: true }, rejected: false };
+      } catch (e) {
+        return { value: { ok: false, error: e instanceof Error ? e.message : String(e) }, rejected: false };
       }
-      return { ok: true };
-    } catch (e) {
-      return { ok: false, error: e instanceof Error ? e.message : String(e) };
-    }
+    }, { ok: false, error: "未配置凭据或 token 获取失败" });
   }
 }
 
