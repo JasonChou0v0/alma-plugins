@@ -10,16 +10,16 @@
  * 6. 流式失败保留已发送游标 + 不在未闭合代码围栏内切断
  *
  * 不发真实消息（fetch 全桩）、不生成生产线程（不连 Alma、不建线程）、清理自身
- * （dispose 激活、还原 fetch）。跑法：bun test/security.mjs
+ * （dispose 激活、还原 fetch）。跑法：bun tests/integration/security.test.mjs
  */
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { createContext } from './harness.mjs';
-import { DingTalkBridge } from '../lib/bridge.ts';
-import { AlmaSocket } from '../lib/alma-socket.ts';
+import { createContext } from '../helpers/context.mjs';
+import { DingTalkBridge } from '../../src/bridge.ts';
+import { AlmaSocket } from '../../src/alma-socket.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const ROOT = path.resolve(__dirname, '..');
+const ROOT = path.resolve(__dirname, '../..');
 
 let pass = 0;
 let fail = 0;
@@ -78,7 +78,7 @@ try {
             pluginSettings: { clientId: '', clientSecret: '', allowedUnionIds: '' },
         });
 
-        const mod = await import(path.join(ROOT, 'main.ts'));
+        const mod = await import(path.join(ROOT, 'src/main.ts'));
         const activation = await mod.activate(context);
         const bridge = globalThis.__dingtalkBridgeProbe?.bridge;
         check('激活后探针可用', Boolean(bridge));

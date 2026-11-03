@@ -8,16 +8,16 @@
  *
  * 结构参考官方 alma-plugins 仓库：
  * - manifest.json 声明 main.js（预打包，自包含依赖，无需 npm install）
- * - main.ts 只做装配，逻辑放在 lib/
+ * - main.ts 只做装配，具体逻辑由同目录的各模块实现
  * - 命令用 commands.register(id, handler)
  * - 状态用 ui.createStatusBarItem
  */
 
 import type { PluginContext, PluginActivation } from 'alma-plugin-api';
 
-import { DingTalkBridge } from './lib/bridge';
-import { createLogger } from './lib/log';
-import type { BridgeConfig, GroupAgentPolicy, SessionMode } from './lib/types';
+import { DingTalkBridge } from './bridge';
+import { createLogger } from './log';
+import type { BridgeConfig, GroupAgentPolicy, SessionMode } from './types';
 
 const STATUS_BAR_ID = 'alma-dingtalk-bridge.status';
 

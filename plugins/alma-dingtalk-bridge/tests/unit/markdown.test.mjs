@@ -3,7 +3,7 @@
  * - Markdown 降级到钉钉支持的子集
  * - 剥掉模型复述的系统提示
  */
-import { DingTalkClient } from '../lib/dingtalk-client.ts';
+import { DingTalkClient } from '../../src/dingtalk-client.ts';
 
 let pass = 0;
 let fail = 0;

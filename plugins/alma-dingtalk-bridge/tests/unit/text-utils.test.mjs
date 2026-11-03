@@ -1,9 +1,9 @@
 /**
  * 纯函数单测：不碰网络，只验证纯逻辑。
- * 跑法：node test/unit.mjs
+ * 跑法：bun tests/unit/text-utils.test.mjs
  */
-import { DingTalkClient } from '../lib/dingtalk-client.ts';
-import { DingTalkBridge } from '../lib/bridge.ts';
+import { DingTalkClient } from '../../src/dingtalk-client.ts';
+import { DingTalkBridge } from '../../src/bridge.ts';
 
 let pass = 0;
 let fail = 0;

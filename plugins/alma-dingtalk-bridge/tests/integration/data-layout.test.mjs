@@ -3,13 +3,13 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { execFileSync } from 'node:child_process';
-import { dataPaths } from '../lib/paths.mjs';
-import { createLogger } from '../lib/log.ts';
-import { DingTalkClient } from '../lib/dingtalk-client.ts';
-import { DingTalkBridge } from '../lib/bridge.ts';
-import { migrateData } from '../scripts/migrate-data.mjs';
+import { dataPaths } from '../../src/paths.mjs';
+import { createLogger } from '../../src/log.ts';
+import { DingTalkClient } from '../../src/dingtalk-client.ts';
+import { DingTalkBridge } from '../../src/bridge.ts';
+import { migrateData } from '../../scripts/migrate-data.mjs';
 
-const parent=fileURLToPath(new URL('../tmp',import.meta.url));fs.mkdirSync(parent,{recursive:true});
+const parent=fileURLToPath(new URL('../../tmp',import.meta.url));fs.mkdirSync(parent,{recursive:true});
 const base=fs.mkdtempSync(path.join(parent,'data-paths-'));
 const realFetch=globalThis.fetch;let checks=0;
 const check=(name,fn)=>{fn();checks++;console.log(`✓ ${name}`);};
@@ -44,7 +44,7 @@ try {
   assert.throws(()=>migrateData({dataDir:dest,legacyLogsDir:old}));
   check('同名不同内容拒绝覆盖',()=>{assert.equal(fs.readFileSync(conflict,'utf8'),'source');assert.equal(fs.readFileSync(path.join(dest,'logs',path.basename(conflict)),'utf8'),'different-target');});
 
-  const collector=fileURLToPath(new URL('../dashboard/collect.mjs',import.meta.url));
+  const collector=fileURLToPath(new URL('../../dashboard/collect.mjs',import.meta.url));
   const sourceSnapshot=path.join(path.dirname(collector),'data.json');
   const original=fs.existsSync(sourceSnapshot)?fs.readFileSync(sourceSnapshot):null;
   execFileSync(process.execPath,[collector],{env:{...process.env,ALMA_DINGTALK_DATA_DIR:dataDir},stdio:'pipe'});

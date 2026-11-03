@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict';
-import { AlmaSocket } from '../lib/alma-socket.ts';
-import { DingTalkBridge } from '../lib/bridge.ts';
-import { DingTalkClient } from '../lib/dingtalk-client.ts';
-import { loadAlmaImage, MAX_IMAGE_BYTES } from '../lib/media.ts';
+import { AlmaSocket } from '../../src/alma-socket.ts';
+import { DingTalkBridge } from '../../src/bridge.ts';
+import { DingTalkClient } from '../../src/dingtalk-client.ts';
+import { loadAlmaImage, MAX_IMAGE_BYTES } from '../../src/media.ts';
 
 let checks=0;
 const check=(name,fn)=>{fn();checks++;console.log(`✓ ${name}`);};

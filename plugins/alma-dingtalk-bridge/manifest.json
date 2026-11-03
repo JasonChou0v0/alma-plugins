@@ -1,7 +1,7 @@
 {
     "id": "alma-dingtalk-bridge",
     "name": "DingTalk Bridge",
-    "version": "2.1.0",
+    "version": "2.1.1",
     "description": "把钉钉机器人接成 Alma 的聊天渠道：Stream 模式收消息，驱动完整 agent（工具/技能/项目工作区），回复推回钉钉。",
     "author": {
         "name": "JasonChou"

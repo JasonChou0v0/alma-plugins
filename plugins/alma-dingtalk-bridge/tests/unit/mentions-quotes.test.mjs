@@ -1,9 +1,9 @@
 /**
  * 验证 @ 提及处理与消息泄漏清洗的边界。
  */
-import { DingTalkBridge } from '../lib/bridge.ts';
-import { AlmaSocket } from '../lib/alma-socket.ts';
-import { DingTalkClient } from '../lib/dingtalk-client.ts';
+import { DingTalkBridge } from '../../src/bridge.ts';
+import { AlmaSocket } from '../../src/alma-socket.ts';
+import { DingTalkClient } from '../../src/dingtalk-client.ts';
 
 let pass = 0;
 let fail = 0;

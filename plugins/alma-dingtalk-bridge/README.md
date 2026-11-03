@@ -16,7 +16,7 @@ AppSecret 只从 `context.storage.secrets` 读取。系统 `safeStorage` 加密�
 
 这里使用的是**插件专属密钥存储**，不是设置页中通过 `alma secret set/list/rm` 管理、注入 Agent 命令环境变量的密钥库；两者不自动同步。更新 AppSecret 请使用插件的「设置安全密钥」命令。
 
-manifest 的 `settings:write` 用于清空旧凭据以及管理员授权命令修改白名单，不用于 `/use`；`/use` 始终使用 `storage.local` 会话覆盖。无效的 `storage:secrets` 权限已移除。独立 `cmd/send.mjs` 已停用，不能绕过授权读取设置文件发信；使用宿主里的 `dingtalk_notify` 工具。
+manifest 的 `settings:write` 用于清空旧凭据以及管理员授权命令修改白名单，不用于 `/use`；`/use` 始终使用 `storage.local` 会话覆盖。无效的 `storage:secrets` 权限已移除。已移除独立 CLI 发信入口；发信使用宿主里的 `dingtalk_notify` 工具，由插件执行鉴权并读取安全存储。
 
 ## 群聊与工具
 
@@ -116,9 +116,9 @@ WebSocket 的 `text_append` 同时承载正文和推理块。插件只接纳明�
 
 ## 归档与看板
 
-原始载荷保存在 `~/Library/Logs/Alma/dingtalk-payloads-YYYY-MM-DD.jsonl`（UTC 分日），权限 `0600`，不自动删除。里面可能包含敏感 webhook、身份与消息全文；不要公开、上传或提交。
+原始载荷保存在插件数据目录的 `logs/dingtalk-payloads-YYYY-MM-DD.jsonl`（UTC 分日），权限 `0600`，不自动删除。里面可能包含敏感 webhook、身份与消息全文；不要公开、上传或提交。
 
-`dashboard/data.json` 是本地私密快照，已加入 `.gitignore`。看板不是持久消息数据库，不应对外开放。引用内容优先读取事件的 `text.repliedMsg.content.text`，保留正文和换行；缺失时才匹配同会话缓存（最多 500 条，每条摘要最多 500 字）。两者均无内容时明确标记引用原文缺失。未接入远端引用查询，不据此断言平台不存在查询接口。
+插件数据目录中的 `dashboard/data.json` 是本地私密快照；源码目录中仅保留旧快照的兼容链接时，该链接也受 `.gitignore` 排除。看板不是持久消息数据库，不应对外开放。引用内容优先读取事件的 `text.repliedMsg.content.text`，保留正文和换行；缺失时才匹配同会话缓存（最多 500 条，每条摘要最多 500 字）。两者均无内容时明确标记引用原文缺失。未接入远端引用查询，不据此断言平台不存在查询接口。
 
 ## 统一数据目录（2.1.0）
 
@@ -151,7 +151,7 @@ node scripts/migrate-data.mjs --offline \
 
 安装目录由 Alma 管理，源码由 Git 仓库管理；共享的聊天数据库、图片原件和图库缓存也由各自宿主功能管理，不迁入插件目录。可在统一目录放符号链接作为管理入口，但不能把共享数据当成本插件独占文件删除。`links/` 下的本机管理链接不随插件发布。
 
-构建输出仍为源码目录的 `main.js`。构建一致性校验和测试使用源码目录内的临时目录，并在正常退出时清理；测试使用独立存储上下文，不写真实运行日志。
+构建输出仍为插件根目录的 `main.js`。构建一致性校验和测试使用插件目录内的临时目录，并在正常退出时清理；测试使用独立存储上下文，不写真实运行日志。
 
 ## 生成图片回传
 
@@ -166,9 +166,31 @@ Agent 生成图片后调用 `alma send photo`，将图片挂到当前 Alma 线�
 
 接口依据：[图片模板与 mediaId](https://open.dingtalk.com/document/development/robot-message-type.md)、[上传媒体文件](https://open.dingtalk.com/document/development/upload-media-files.md)、[机器人群消息](https://open.dingtalk.com/document/development/the-robot-sends-a-group-message.md)。
 
+## 仓库目录
+
+本插件位于 `plugins/alma-dingtalk-bridge/`。上层 `packages/`、其他插件和注册表是插件集合仓库的公共内容。
+
+```text
+alma-dingtalk-bridge/
+├── src/                  # 运行源码；入口 main.ts
+├── tests/
+│   ├── unit/             # 文本、身份、提及等单元测试
+│   ├── integration/      # 模拟传输、鉴权、队列、生命周期、图片与目录迁移
+│   └── helpers/          # 隔离的宿主测试上下文
+├── scripts/              # 构建、测试、产物校验、历史数据迁移
+├── dashboard/            # 看板源码；生成数据写入插件数据目录
+├── main.js               # 提交到仓库的预打包安装入口
+├── manifest.json         # Alma 插件声明
+├── package.json          # 依赖与开发命令
+├── bun.lock              # 唯一依赖锁文件
+└── README.md
+```
+
+已移除停用的独立发信 CLI 和 3 个旧版真实宿主联调脚本；需要追溯时查看 Git 历史。原有 14 个离线套件全部保留并分类，不把历史联调结果当作当前版本的线上验收。
+
 ## 构建与验证
 
-使用 **Bun 1.3.14**，提交 `bun.lock`。`dingtalk-stream` 的 beta 版本固定为 `2.1.6-beta.1`，直接使用的 `ws` 也显式锁定。
+在插件目录执行以下命令，使用 **Bun 1.3.14** 和唯一锁文件 `bun.lock`，无需 npm 安装。`dingtalk-stream` 固定为 `2.1.6-beta.1`，直接使用的 `ws` 也显式锁定。
 
 ```bash
 bun install --frozen-lockfile --ignore-scripts
@@ -177,14 +199,16 @@ bun run build
 bun run check:bundle
 ```
 
+也可以用 `bun run test:unit` 或 `bun run test:integration` 单独运行一类测试。统一入口按目录发现 `.test.mjs` 文件，每个套件在独立进程中执行；没有找到套件或任一失败时返回非零状态。
+
 `check:bundle` 在临时目录重建并与已提交的 `main.js` 逐字节比较，退出前清理自身临时文件。CI **先校验旧产物，不先覆盖 main.js**，可发现源码改了但 bundle 未更新。
 
-仓库根目录的 `.github/workflows/dingtalk-bridge.yml` 支持仓库的 `plugins/alma-dingtalk-bridge/`、旧目录 `plugins/dingtalk-bridge/`、本工作区的 `alma-dingtalk-bridge/` 和独立插件仓库。推送到上游结构时必须把工作流放在仓库根目录；嵌套在插件目录的工作流不会生效。
+仓库根目录的 `.github/workflows/dingtalk-bridge.yml` 固定使用 `plugins/alma-dingtalk-bridge/`，验证注册表版本、锁定依赖、全部离线测试及产物一致性。
 
-离线测试包括访问控制、身份、流式、SDK 订阅及 `test/reliability.mjs`：后者用模拟传输驱动实际 `submit → dispatch → finalize`，验证三消息 FIFO、跨群并行、断线隔离、超时、发送竞争、分块失败和密钥迁移。不会使用真实钉钉或执行生产 agent。历史 E2E 脚本不在默认测试入口，不能把旧测试结果当作当前安全策略的线上验收。
+离线测试用模拟传输驱动实际生产代码路径，覆盖访问控制、身份、流式、SDK 订阅、三消息 FIFO、跨群并行、断线隔离、超时、发送竞争、分块失败、密钥迁移和数据目录迁移。不会连接真实钉钉或执行生产 agent。
 
 ## 内部协议限制
 
-`/ws/threads` 与 `/api/*` 是 Alma 内部协议，没有兼容承诺。本地已核验版本为 Alma 0.4.357；升级后需重新验证事件格式与宿主接口。调用集中在 `lib/alma-socket.ts` 和 `lib/alma-api.ts`，保留这层边界便于迁移正式渠道 API。
+`/ws/threads` 与 `/api/*` 是 Alma 内部协议，没有兼容承诺。本地已核验版本为 Alma 0.4.357；升级后需重新验证事件格式与宿主接口。调用集中在 `src/alma-socket.ts` 和 `src/alma-api.ts`，保留这层边界便于迁移正式渠道 API。
 
 当前未实现正式渠道 API、可靠的群只读工具模式、图片理解和通用文件附件回传。不能把默认拒绝群生成称为「已支持群只读聊天」。

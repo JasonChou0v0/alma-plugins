@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict';
-import { createContext } from './harness.mjs';
-import { DingTalkBridge } from '../lib/bridge.ts';
-import { AlmaSocket } from '../lib/alma-socket.ts';
-import { activate } from '../main.ts';
+import { createContext } from '../helpers/context.mjs';
+import { DingTalkBridge } from '../../src/bridge.ts';
+import { AlmaSocket } from '../../src/alma-socket.ts';
+import { activate } from '../../src/main.ts';
 const tick=()=>new Promise(r=>setImmediate(r));
 const timers=new Map();
 const originals={setTimeout,clearTimeout,setInterval,clearInterval,start:DingTalkBridge.prototype.start,stop:DingTalkBridge.prototype.stop};

@@ -112,7 +112,7 @@ console.log('\n[问题3: 进行中时新消息排队]');
 /* ============ 问题 4：/use 不依赖 settings:write ============ */
 console.log('\n[问题4: /use 权限]');
 {
-    const { permissions } = JSON.parse(readFileSync(new URL('../manifest.json', import.meta.url), 'utf8'));
+    const { permissions } = JSON.parse(readFileSync(new URL('../../manifest.json', import.meta.url), 'utf8'));
     check('manifest 不含无效 storage:secrets 权限', !permissions.includes('storage:secrets'));
 
     /* /use 现在写 storage.local，不需要 settings:write */

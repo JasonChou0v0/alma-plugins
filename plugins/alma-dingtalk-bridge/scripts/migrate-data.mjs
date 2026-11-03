@@ -3,7 +3,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { randomUUID } from 'node:crypto';
-import { dataPaths } from '../lib/paths.mjs';
+import { dataPaths } from '../src/paths.mjs';
 
 /** Run only while the plugin and dashboard collector are stopped. Existing unequal files fail closed. */
 export function migrateData({ dataDir, legacyLogsDir, legacySnapshot }) {

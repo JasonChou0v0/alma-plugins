@@ -7,7 +7,7 @@
  * - 流式分段最多 3 段（且默认关闭）
  * - 最终回复按 4000 字切分
  */
-import { DingTalkClient } from '../lib/dingtalk-client.ts';
+import { DingTalkClient } from '../../src/dingtalk-client.ts';
 
 let pass = 0;
 let fail = 0;

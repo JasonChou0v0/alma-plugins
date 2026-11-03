@@ -6,7 +6,7 @@
  */
 import * as fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { dataPaths } from '../lib/paths.mjs';
+import { dataPaths } from '../src/paths.mjs';
 import * as path from 'node:path';
 
 const { logs: LOG_DIR, dashboard: DASHBOARD_DIR, snapshot: OUT } = dataPaths(process.env.ALMA_DINGTALK_DATA_DIR);

@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { DingTalkBridge } from '../lib/bridge.ts';
+import { DingTalkBridge } from '../../src/bridge.ts';
 
 let assertions=0, seq=0;
 const check=(name,fn)=>{fn();assertions++;console.log(`✓ ${name}`);};

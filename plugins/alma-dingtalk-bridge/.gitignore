@@ -1,6 +1,5 @@
 node_modules/
 .DS_Store
-test/.storage/
 dashboard/data.json
 *.log
 *.jsonl

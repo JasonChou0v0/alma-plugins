@@ -11,7 +11,7 @@ await mkdir(parent, { recursive: true });
 const temporary = await mkdtemp(resolve(parent, 'bundle-'));
 try {
   const target = resolve(temporary, 'main.js');
-  const result = spawnSync(process.execPath, ['build', 'main.ts', '--outfile', target,
+  const result = spawnSync(process.execPath, ['build', 'src/main.ts', '--outfile', target,
     '--target', 'node', '--format', 'esm', '--external', 'electron', '--external', 'zod'],
     { cwd: root, stdio: 'inherit' });
   if (result.status !== 0) throw new Error('构建失败');

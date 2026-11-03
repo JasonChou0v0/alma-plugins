@@ -10,15 +10,15 @@
  *  - notify 只允许白名单真实收件人，空名单拒绝，nick: 拒绝，避免 send helper 旁路
  *
  * 不连真 Alma、不启动真实 agent（socket.submit 桩为空操作）、不真实发信
- * （全局 fetch 桩 + replyWebhook 捕获）。跑法：bun test/access-control.mjs
+ * （全局 fetch 桩 + replyWebhook 捕获）。跑法：bun tests/integration/access-control.test.mjs
  */
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { createContext } from './harness.mjs';
-import { DingTalkBridge } from '../lib/bridge.ts';
+import { createContext } from '../helpers/context.mjs';
+import { DingTalkBridge } from '../../src/bridge.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const ROOT = path.resolve(__dirname, '..');
+const ROOT = path.resolve(__dirname, '../..');
 
 let pass = 0;
 let fail = 0;

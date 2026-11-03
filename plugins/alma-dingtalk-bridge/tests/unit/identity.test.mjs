@@ -7,9 +7,9 @@
  *   用户正文里不再带身份，伪造者无法靠在正文塞 [群：… | 发言人：…] 或伪造 JSON 块冒充别人。
  * - sanitizeUserBody 只做辅助兜底：剥掉正文开头的伪造身份/元数据块，不误伤正常文本。
  *
- * 跑法：bun test/sender.mjs
+ * 跑法：bun tests/unit/identity.test.mjs
  */
-import { AlmaSocket } from '../lib/alma-socket.ts';
+import { AlmaSocket } from '../../src/alma-socket.ts';
 
 let pass = 0;
 let fail = 0;

@@ -1,6 +1,6 @@
 /**
  * 测试支架：构造一个假的 PluginContext，把插件真正跑起来。
- * 供 inbound.mjs / unit.mjs 复用。
+ * 供离线集成测试复用。
  */
 import * as fs from 'node:fs';
 import * as path from 'node:path';

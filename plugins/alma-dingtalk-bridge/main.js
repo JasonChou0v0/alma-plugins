@@ -14651,10 +14651,10 @@ var require_follow_redirects = __commonJS((exports, module) => {
   module.exports.wrap = wrap;
 });
 
-// lib/bridge.ts
+// src/bridge.ts
 import * as fs2 from "node:fs";
 
-// lib/paths.mjs
+// src/paths.mjs
 import * as os from "node:os";
 import * as path from "node:path";
 function defaultDataDir() {
@@ -14671,7 +14671,7 @@ function dataPaths(storagePath = defaultDataDir()) {
   };
 }
 
-// lib/bridge.ts
+// src/bridge.ts
 import * as path3 from "node:path";
 
 // node_modules/dingtalk-stream/dist/constants.mjs
@@ -20754,7 +20754,7 @@ class DWClient extends EventEmitter2 {
 // node_modules/dingtalk-stream/dist/index.mjs
 init_wrapper();
 
-// lib/alma-api.ts
+// src/alma-api.ts
 class AlmaApi {
   baseUrl;
   logger;
@@ -20839,7 +20839,7 @@ class AlmaApi {
   }
 }
 
-// lib/media.ts
+// src/media.ts
 var MAX_IMAGE_BYTES = 20 * 1024 * 1024;
 async function loadAlmaImage(attachment, port) {
   if (!["image/png", "image/jpeg", "image/gif", "image/bmp"].includes(attachment.mediaType)) {
@@ -20898,7 +20898,7 @@ async function loadAlmaImage(attachment, port) {
   return { bytes, mediaType: detected, filename: "image." + { "image/png": "png", "image/jpeg": "jpg", "image/gif": "gif", "image/bmp": "bmp" }[detected] };
 }
 
-// lib/authorization.ts
+// src/authorization.ts
 class AuthorizationCommands {
   config;
   settings;
@@ -20990,7 +20990,7 @@ class AuthorizationCommands {
   }
 }
 
-// lib/alma-socket.ts
+// src/alma-socket.ts
 var EPHEMERAL_CONTEXT_BASE = [
   "[System: 你正在通过「钉钉」渠道与用户对话。",
   "",
@@ -21442,7 +21442,7 @@ class AlmaSocket {
   }
 }
 
-// lib/dingtalk-client.ts
+// src/dingtalk-client.ts
 import * as fs from "node:fs";
 import * as path2 from "node:path";
 var MAX_CHUNK = 4000;
@@ -21809,7 +21809,7 @@ ${fence}` : ""), consumed });
   }
 }
 
-// lib/bridge.ts
+// src/bridge.ts
 var STORAGE_KEY = "dingtalkSessions";
 var STORAGE_VER = 2;
 var OVERRIDES_KEY = "dingtalkWorkspaceOverrides";
@@ -22821,7 +22821,7 @@ class DingTalkBridge {
   }
 }
 
-// lib/log.ts
+// src/log.ts
 import * as fs3 from "node:fs";
 import * as path4 from "node:path";
 var MAX_FILE_BYTES = 5 * 1024 * 1024;
@@ -22893,7 +22893,7 @@ function createLogger(host, storagePath) {
   };
 }
 
-// main.ts
+// src/main.ts
 var STATUS_BAR_ID = "alma-dingtalk-bridge.status";
 async function activate(context) {
   const { settings, ui, commands } = context;
