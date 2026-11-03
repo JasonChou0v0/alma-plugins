@@ -21223,6 +21223,9 @@ class AlmaSocket {
       this.quarantined.delete(oldest);
     }
   }
+  isQuarantined(threadId) {
+    return this.quarantined.has(threadId);
+  }
   forgetThread(threadId) {
     this.quarantined.delete(threadId);
   }
@@ -21359,7 +21362,8 @@ class AlmaSocket {
         break;
       }
       case "generation_error": {
-        this.cb.onError(turn, String(data?.error ?? data?.message ?? "未知错误"));
+        this.logger.warn("Alma 生成出错:", String(data?.error ?? data?.message ?? "未知错误").slice(0, 300));
+        this.cb.onError(turn, "模型生成出错，详情见本机日志");
         break;
       }
       default:
@@ -21502,7 +21506,7 @@ class AlmaSocket {
       }
     }
     if (!this.isOpen() || !this.ws) {
-      throw new Error(`Alma WebSocket 未连接（状态: ${this.getState()}），请检查 Alma 是否在运行`);
+      throw Object.assign(new Error("Alma 未连接，请检查 Alma 是否在运行后重试"), { userFacing: true });
     }
     if (this.quarantined.has(turn.threadId))
       throw new Error("该线程的远端状态不确定，禁止复用");
@@ -21628,6 +21632,17 @@ class DingTalkClient {
       appendPrivate(dataPaths(this.storagePath).logs, { at: new Date().toISOString(), ...record }, retentionDays);
     } catch (e) {
       this.logger.warn("出站归档失败", e instanceof Error ? e.message : "unknown");
+    }
+  }
+  webhooks = new Map;
+  registerWebhook(webhook, meta) {
+    this.webhooks.delete(webhook);
+    this.webhooks.set(webhook, meta);
+    while (this.webhooks.size > 500) {
+      const oldest = this.webhooks.keys().next().value;
+      if (oldest === undefined)
+        break;
+      this.webhooks.delete(oldest);
     }
   }
   tokenInflight = null;
@@ -21774,6 +21789,15 @@ ${fence}` : ""), consumed });
   async replyWebhook(webhook, text, title) {
     if (!webhook)
       return { ok: false, error: "缺少 sessionWebhook" };
+    const meta = this.webhooks.get(webhook);
+    if (meta?.expiresAt && Date.now() > meta.expiresAt - 5000) {
+      this.logger.warn("sessionWebhook 已过期，改用主动发送");
+      if (meta.conversationId)
+        return this.sendToGroup(meta.conversationId, text);
+      if (meta.staffId)
+        return this.sendToUser(meta.staffId, text);
+      return { ok: false, error: "回复地址已过期且无可用的主动发送目标" };
+    }
     const markdown = DingTalkClient.toDingTalkMarkdown(text);
     const payload = {
       msgtype: "markdown",
@@ -22018,6 +22042,11 @@ ${fence}` : ""), consumed });
 }
 
 // src/bridge.ts
+class BridgeUserError extends Error {
+  static is(e) {
+    return e instanceof BridgeUserError || e?.userFacing === true;
+  }
+}
 var STORAGE_KEY = "dingtalkSessions";
 var STORAGE_VER = 2;
 var OVERRIDES_KEY = "dingtalkWorkspaceOverrides";
@@ -22106,7 +22135,7 @@ class DingTalkBridge {
   }
   getStatus() {
     return {
-      running: this.running,
+      running: this.running && this.dwClient?.connected !== false,
       socketConnected: this.socket.isOpen(),
       startedAt: this.startedAt,
       lastMessageAt: this.lastMessageAt,
@@ -22259,6 +22288,7 @@ class DingTalkBridge {
       const data = await this.ctx.storage.local.get(STORAGE_KEY, null);
       if (data && data.version === STORAGE_VER && data.sessions) {
         this.sessions = data.sessions;
+        this.pruneStaleSessions();
         this.ctx.logger.info(`已载入 ${Object.keys(this.sessions).length} 条会话映射`);
       } else if (data?.sessions) {
         this.sessions = data.sessions;
@@ -22267,6 +22297,25 @@ class DingTalkBridge {
     } catch (e) {
       this.ctx.logger.warn("读取会话映射失败", e);
     }
+  }
+  pruneStaleSessions(now = Date.now()) {
+    const limit = 7776000000;
+    let removed = 0;
+    for (const [key, rec] of Object.entries(this.sessions)) {
+      if (typeof rec.lastUsedAt !== "number") {
+        rec.lastUsedAt = now;
+        continue;
+      }
+      if (now - rec.lastUsedAt > limit) {
+        delete this.sessions[key];
+        removed++;
+      }
+    }
+    if (removed) {
+      this.ctx.logger.info(`清理了 ${removed} 条长期未用的会话映射`);
+      this.saveSessions();
+    }
+    return removed;
   }
   async loadWorkspaceOverrides() {
     try {
@@ -22320,8 +22369,13 @@ class DingTalkBridge {
       if (existing?.threadId) {
         try {
           const thread = await this.ctx.chat.getThread(existing.threadId);
-          if (thread)
+          if (thread) {
+            if (Date.now() - (existing.lastUsedAt ?? 0) > 3600000) {
+              existing.lastUsedAt = Date.now();
+              this.saveSessions();
+            }
             return existing.threadId;
+          }
           this.ctx.logger.warn("映射的线程已不存在，重新创建", existing.threadId);
         } catch (e) {
           this.ctx.logger.warn("校验线程失败，沿用缓存", e);
@@ -22353,11 +22407,11 @@ class DingTalkBridge {
     } catch (e) {
       this.ctx.logger.warn("HTTP 建线程失败，尝试插件 API 回退", e);
       const fallback = await this.ctx.chat.createThread({ title: (title || "钉钉会话").slice(0, 80), model });
-      this.sessions[key] = { threadId: fallback.id, createdAt: Date.now(), title };
+      this.sessions[key] = { threadId: fallback.id, createdAt: Date.now(), lastUsedAt: Date.now(), title };
       await this.saveSessions();
       return fallback.id;
     }
-    this.sessions[key] = { threadId: thread.id, createdAt: Date.now(), title };
+    this.sessions[key] = { threadId: thread.id, createdAt: Date.now(), lastUsedAt: Date.now(), title };
     await this.saveSessions();
     this.ctx.logger.info(`为 ${key} 创建线程 ${thread.id}（工作区 ${workspaceId ?? "默认"}）`);
     return thread.id;
@@ -22531,7 +22585,7 @@ class DingTalkBridge {
     }
     if (payload?.chatbotUserId)
       this.botDingTalkId = payload.chatbotUserId;
-    this.ctx.logger.info(`入站字段: conv=${payload?.conversationId ? "ok" : "MISSING"} staff=${payload?.senderStaffId || "-"} sender=${payload?.senderId || "-"} nick=${payload?.senderNick || "-"} corp=${payload?.senderCorpId || "-"} botCorp=${payload?.chatbotCorpId || "-"} webhook=${payload?.sessionWebhook ? "ok" : "MISSING"} atUsers=${JSON.stringify(payload?.atUsers ?? null).slice(0, 220)} botUserId=${payload?.chatbotUserId || "-"} originalMsgId=${payload?.originalMsgId || "-"} isReply=${payload?.text?.isReplyMsg ?? payload?.content?.isReplyMsg ?? "-"} convType=${payload?.conversationType || "-"} convTitle=${payload?.conversationTitle || "-"}`);
+    this.ctx.logger.info(`入站字段: conv=${payload?.conversationId ? "ok" : "MISSING"} unionId=${payload?.senderUnionId ? "ok" : "MISSING"} staff=${payload?.senderStaffId ? "ok" : "-"} webhook=${payload?.sessionWebhook ? "ok" : "MISSING"} atUsers=${Array.isArray(payload?.atUsers) ? payload.atUsers.length : "-"} isReply=${payload?.text?.isReplyMsg ?? payload?.content?.isReplyMsg ?? "-"} convType=${payload?.conversationType || "-"} msgtype=${payload?.msgtype || "-"}`);
     if (this.cfg().logRawPayload) {
       this.archivePayload(payload, downstream);
     }
@@ -22539,6 +22593,12 @@ class DingTalkBridge {
     const senderId = typeof payload.senderUnionId === "string" ? payload.senderUnionId : "";
     const webhook = payload?.sessionWebhook;
     const msgId = payload?.msgId;
+    if (webhook) {
+      this.dingtalk.registerWebhook(webhook, {
+        expiresAt: typeof payload.sessionWebhookExpiredTime === "number" ? payload.sessionWebhookExpiredTime : undefined,
+        ...String(payload.conversationType) === "2" ? { conversationId: chatId } : { staffId: payload.senderStaffId }
+      });
+    }
     if (!chatId || !webhook) {
       const missing = [
         !chatId && "conversationId",
@@ -22681,7 +22741,7 @@ class DingTalkBridge {
 `));
       return;
     }
-    this.ctx.logger.info(`对话消息（${senderId}）: ${text.slice(0, 60)}`);
+    this.ctx.logger.info(`对话消息（${senderId}）: ${text.length} 字`);
     const key = this.sessionKey(chatId, senderId, config.mode);
     const previous = this.queues.get(key) ?? Promise.resolve();
     const queued = this.queues.has(key);
@@ -22698,10 +22758,10 @@ class DingTalkBridge {
     let releaseThread;
     try {
       if (this.stopping)
-        throw new Error("桥接已停止，本条未执行，请稍后重试");
+        throw new BridgeUserError("桥接已停止，本条未执行，请稍后重试");
       const live = this.cfg();
       if (!live.allowedUnionIds.includes(senderId) || isGroup && (!(live.allowedConversationIds ?? []).includes(chatId) || live.groupAgentPolicy !== "fullTools")) {
-        throw new Error("排队期间权限已变更，本条未执行");
+        throw new BridgeUserError("排队期间权限已变更，本条未执行");
       }
       const threadId = await this.resolveThread(chatId, senderId, title);
       threadIdLocked = threadId;
@@ -22712,7 +22772,7 @@ class DingTalkBridge {
       this.threadQueues.set(threadId, threadGate);
       await priorThread;
       if (this.stopping)
-        throw new Error("桥接已停止");
+        throw new BridgeUserError("桥接已停止");
       const model = await this.api.resolveModel(config.defaultModel);
       const turn = {
         threadId,
@@ -22743,11 +22803,12 @@ class DingTalkBridge {
       await completed;
     } catch (e) {
       const failedId = this.sessions[key]?.threadId;
-      if (failedId)
+      if (failedId && !BridgeUserError.is(e) && this.socket.isQuarantined(failedId)) {
         this.invalidateThread(failedId);
+      }
       this.ctx.logger.error("处理消息失败", e);
       this.lastError = e instanceof Error ? e.message : String(e);
-      await this.dingtalk.replyWebhook(webhook, `❌ 处理失败：${this.lastError}`);
+      await this.dingtalk.replyWebhook(webhook, `❌ 处理失败：${BridgeUserError.is(e) ? e.message : "内部错误，详情见本机日志"}`);
     } finally {
       releaseThread?.();
       if (threadIdLocked && this.threadQueues.get(threadIdLocked) === threadGate)

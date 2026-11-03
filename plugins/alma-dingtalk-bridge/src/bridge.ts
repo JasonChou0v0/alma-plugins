@@ -20,6 +20,11 @@ import type {
     TurnState,
 } from './types';
 
+/** 可以原样展示给用户的错误；其他错误只写日志。 */
+class BridgeUserError extends Error {
+    static is(e: unknown): e is Error { return e instanceof BridgeUserError || (e as any)?.userFacing === true; }
+}
+
 export interface BridgeDeps {
     context: PluginContext;
     config: () => BridgeConfig;
@@ -167,7 +172,7 @@ export class DingTalkBridge {
 
     getStatus(): BridgeStatus {
         return {
-            running: this.running,
+            running: this.running && this.dwClient?.connected !== false,
             socketConnected: this.socket.isOpen(),
             startedAt: this.startedAt,
             lastMessageAt: this.lastMessageAt,
@@ -341,6 +346,7 @@ export class DingTalkBridge {
             const data = await this.ctx.storage.local.get<any>(STORAGE_KEY, null);
             if (data && data.version === STORAGE_VER && data.sessions) {
                 this.sessions = data.sessions;
+                this.pruneStaleSessions();
                 this.ctx.logger.info(`已载入 ${Object.keys(this.sessions).length} 条会话映射`);
             } else if (data?.sessions) {
                 /* 旧版本迁移：字段兼容就直接用 */
@@ -350,6 +356,18 @@ export class DingTalkBridge {
         } catch (e) {
             this.ctx.logger.warn('读取会话映射失败', e);
         }
+    }
+
+    /** 超过 90 天没用的映射只删映射，不动 Alma 里的线程；没有时间戳的旧记录从现在起算。 */
+    private pruneStaleSessions(now = Date.now()): number {
+        const limit = 90 * 86_400_000;
+        let removed = 0;
+        for (const [key, rec] of Object.entries(this.sessions)) {
+            if (typeof rec.lastUsedAt !== 'number') { rec.lastUsedAt = now; continue; }
+            if (now - rec.lastUsedAt > limit) { delete this.sessions[key]; removed++; }
+        }
+        if (removed) { this.ctx.logger.info(`清理了 ${removed} 条长期未用的会话映射`); void this.saveSessions(); }
+        return removed;
     }
 
     private async loadWorkspaceOverrides(): Promise<void> {
@@ -418,7 +436,10 @@ export class DingTalkBridge {
                 /* 校验线程是否还在（用户可能手动删了） */
                 try {
                     const thread = await this.ctx.chat.getThread(existing.threadId);
-                    if (thread) return existing.threadId;
+                    if (thread) {
+                        if (Date.now() - (existing.lastUsedAt ?? 0) > 3_600_000) { existing.lastUsedAt = Date.now(); void this.saveSessions(); }
+                        return existing.threadId;
+                    }
                     this.ctx.logger.warn('映射的线程已不存在，重新创建', existing.threadId);
                 } catch (e) {
                     /* 查询失败先信任缓存，避免网络抖动导致上下文丢失 */
@@ -458,12 +479,12 @@ export class DingTalkBridge {
             /* 回退：用插件上下文的 chat.createThread（若宿主接线了就能用） */
             this.ctx.logger.warn('HTTP 建线程失败，尝试插件 API 回退', e);
             const fallback = await this.ctx.chat.createThread({ title: (title || '钉钉会话').slice(0, 80), model });
-            this.sessions[key] = { threadId: fallback.id, createdAt: Date.now(), title };
+            this.sessions[key] = { threadId: fallback.id, createdAt: Date.now(), lastUsedAt: Date.now(), title };
             await this.saveSessions();
             return fallback.id;
         }
 
-        this.sessions[key] = { threadId: thread.id, createdAt: Date.now(), title };
+        this.sessions[key] = { threadId: thread.id, createdAt: Date.now(), lastUsedAt: Date.now(), title };
         await this.saveSessions();
         this.ctx.logger.info(`为 ${key} 创建线程 ${thread.id}（工作区 ${workspaceId ?? '默认'}）`);
         return thread.id;
@@ -682,18 +703,13 @@ export class DingTalkBridge {
         /* 每个入站消息都记一行精简摘要，便于判断跨企业等边界情况 */
         this.ctx.logger.info(
             `入站字段: conv=${payload?.conversationId ? 'ok' : 'MISSING'}` +
-                ` staff=${payload?.senderStaffId || '-'}` +
-                ` sender=${payload?.senderId || '-'}` +
-                ` nick=${payload?.senderNick || '-'}` +
-                ` corp=${payload?.senderCorpId || '-'}` +
-                ` botCorp=${payload?.chatbotCorpId || '-'}` +
+                ` unionId=${payload?.senderUnionId ? 'ok' : 'MISSING'}` +
+                ` staff=${payload?.senderStaffId ? 'ok' : '-'}` +
                 ` webhook=${payload?.sessionWebhook ? 'ok' : 'MISSING'}` +
-                ` atUsers=${JSON.stringify(payload?.atUsers ?? null).slice(0, 220)}` +
-                ` botUserId=${payload?.chatbotUserId || '-'}` +
-                ` originalMsgId=${payload?.originalMsgId || '-'}` +
+                ` atUsers=${Array.isArray(payload?.atUsers) ? payload.atUsers.length : '-'}` +
                 ` isReply=${payload?.text?.isReplyMsg ?? payload?.content?.isReplyMsg ?? '-'}` +
                 ` convType=${payload?.conversationType || '-'}` +
-                ` convTitle=${payload?.conversationTitle || '-'}`,
+                ` msgtype=${payload?.msgtype || '-'}`,
         );
 
         /*
@@ -710,6 +726,12 @@ export class DingTalkBridge {
         const senderId = typeof payload.senderUnionId === 'string' ? payload.senderUnionId : '';
         const webhook = payload?.sessionWebhook;
         const msgId = payload?.msgId;
+        if (webhook) {
+            this.dingtalk.registerWebhook(webhook, {
+                expiresAt: typeof payload.sessionWebhookExpiredTime === 'number' ? payload.sessionWebhookExpiredTime : undefined,
+                ...(String(payload.conversationType) === '2' ? { conversationId: chatId } : { staffId: payload.senderStaffId }),
+            });
+        }
 
         /* 会话和回复地址为必需字段；用户身份随后只按 senderUnionId 核验。 */
         if (!chatId || !webhook) {
@@ -900,7 +922,7 @@ export class DingTalkBridge {
             return;
         }
 
-        this.ctx.logger.info(`对话消息（${senderId}）: ${text.slice(0, 60)}`);
+        this.ctx.logger.info(`对话消息（${senderId}）: ${text.length} 字`);
 
         // sessionKey 在建线程前锁定；同一键只创建一个线程、同一线程只运行一轮。
         // 不同键独立，等待生成结束或网络回复时不阻塞其他群。
@@ -916,12 +938,12 @@ export class DingTalkBridge {
         let threadGate: Promise<void> | undefined;
         let releaseThread: (() => void) | undefined;
         try {
-            if (this.stopping) throw new Error('桥接已停止，本条未执行，请稍后重试');
+            if (this.stopping) throw new BridgeUserError('桥接已停止，本条未执行，请稍后重试');
             // 排队期间权限可能变更，执行前再校验一次。
             const live = this.cfg();
             if (!live.allowedUnionIds.includes(senderId) ||
                 (isGroup && (!(live.allowedConversationIds ?? []).includes(chatId) || live.groupAgentPolicy !== 'fullTools'))) {
-                throw new Error('排队期间权限已变更，本条未执行');
+                throw new BridgeUserError('排队期间权限已变更，本条未执行');
             }
             const threadId = await this.resolveThread(chatId, senderId, title);
             threadIdLocked = threadId;
@@ -929,7 +951,7 @@ export class DingTalkBridge {
             threadGate = new Promise<void>(r => { releaseThread = r; });
             this.threadQueues.set(threadId, threadGate);
             await priorThread;
-            if (this.stopping) throw new Error('桥接已停止');
+            if (this.stopping) throw new BridgeUserError('桥接已停止');
             const model = await this.api.resolveModel(config.defaultModel);
             const turn: TurnState = {
                 threadId,
@@ -966,11 +988,14 @@ export class DingTalkBridge {
             );
             await completed;
         } catch (e) {
+            // 只有线程状态确实不确定时才作废映射；与线程无关的失败（权限变更、桥接停止、Alma 未连接）保留上下文。
             const failedId = this.sessions[key]?.threadId;
-            if (failedId) this.invalidateThread(failedId);
+            if (failedId && !BridgeUserError.is(e) && this.socket.isQuarantined(failedId)) {
+                this.invalidateThread(failedId);
+            }
             this.ctx.logger.error('处理消息失败', e);
             this.lastError = e instanceof Error ? e.message : String(e);
-            await this.dingtalk.replyWebhook(webhook, `❌ 处理失败：${this.lastError}`);
+            await this.dingtalk.replyWebhook(webhook, `❌ 处理失败：${BridgeUserError.is(e) ? e.message : '内部错误，详情见本机日志'}`);
         } finally {
             releaseThread?.();
             if (threadIdLocked && this.threadQueues.get(threadIdLocked) === threadGate) this.threadQueues.delete(threadIdLocked);

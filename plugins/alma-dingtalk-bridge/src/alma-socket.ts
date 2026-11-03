@@ -139,6 +139,7 @@ export class AlmaSocket {
             this.quarantined.delete(oldest);
         }
     }
+    isQuarantined(threadId: string): boolean { return this.quarantined.has(threadId); }
     /** 线程被删除或会话被重置后，隔离记录不再有意义。 */
     forgetThread(threadId: string): void {
         this.quarantined.delete(threadId);
@@ -278,7 +279,9 @@ export class AlmaSocket {
                 break;
             }
             case 'generation_error': {
-                this.cb.onError(turn, String(data?.error ?? data?.message ?? '未知错误'));
+                // 上游错误原文可能带本机路径、端口等细节：只进本机日志，用户侧给通用提示。
+                this.logger.warn('Alma 生成出错:', String(data?.error ?? data?.message ?? '未知错误').slice(0, 300));
+                this.cb.onError(turn, '模型生成出错，详情见本机日志');
                 break;
             }
             default:
@@ -474,7 +477,7 @@ export class AlmaSocket {
         }
 
         if (!this.isOpen() || !this.ws) {
-            throw new Error(`Alma WebSocket 未连接（状态: ${this.getState()}），请检查 Alma 是否在运行`);
+            throw Object.assign(new Error('Alma 未连接，请检查 Alma 是否在运行后重试'), { userFacing: true });
         }
 
         if (this.quarantined.has(turn.threadId)) throw new Error('该线程的远端状态不确定，禁止复用');

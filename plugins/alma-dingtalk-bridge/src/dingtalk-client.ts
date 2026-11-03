@@ -52,6 +52,17 @@ export class DingTalkClient {
 
     /* ---------------- 分段 ---------------- */
 
+    /** webhook → 过期时间与可替代的主动发送目标；有上限，只保留最近的。 */
+    private readonly webhooks = new Map<string, { expiresAt?: number; conversationId?: string; staffId?: string }>();
+    registerWebhook(webhook: string, meta: { expiresAt?: number; conversationId?: string; staffId?: string }): void {
+        this.webhooks.delete(webhook);
+        this.webhooks.set(webhook, meta);
+        while (this.webhooks.size > 500) {
+            const oldest = this.webhooks.keys().next().value;
+            if (oldest === undefined) break;
+            this.webhooks.delete(oldest);
+        }
+    }
     private tokenInflight: Promise<string | null> | null = null;
     private tokenEpoch = 0;
     clearToken(): void { this.token = null; this.tokenExpiry = 0; this.tokenInflight = null; this.tokenEpoch++; }
@@ -249,6 +260,15 @@ export class DingTalkClient {
      */
     async replyWebhook(webhook: string, text: string, title?: string): Promise<SendResult> {
         if (!webhook) return { ok: false, error: '缺少 sessionWebhook' };
+
+        // 排队很久后 webhook 可能已过期：改用机器人主动发送，目标只能是这条消息所属的会话本身。
+        const meta = this.webhooks.get(webhook);
+        if (meta?.expiresAt && Date.now() > meta.expiresAt - 5_000) {
+            this.logger.warn('sessionWebhook 已过期，改用主动发送');
+            if (meta.conversationId) return this.sendToGroup(meta.conversationId, text);
+            if (meta.staffId) return this.sendToUser(meta.staffId, text);
+            return { ok: false, error: '回复地址已过期且无可用的主动发送目标' };
+        }
 
         const markdown = DingTalkClient.toDingTalkMarkdown(text);
         const payload = {

@@ -58,6 +58,8 @@ export type SessionMode = 'per-chat' | 'per-sender' | 'single';
 export interface SessionRecord {
     threadId: string;
     createdAt: number;
+    /** 最近一次使用时间，用于清理长期不用的映射 */
+    lastUsedAt?: number;
     title?: string;
 }
 
