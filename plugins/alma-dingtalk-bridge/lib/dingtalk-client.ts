@@ -6,7 +6,7 @@
  * 这里实现了 token 缓存与主动发送。
  */
 import * as fs from 'node:fs';
-import * as os from 'node:os';
+import { dataPaths } from './paths.mjs';
 import * as path from 'node:path';
 import type { SendResult } from './types';
 import type { OutboundImage } from './media';
@@ -30,6 +30,7 @@ export class DingTalkClient {
     constructor(
         private readonly credentials: () => { clientId: string; clientSecret: string; robotCode: string },
         private readonly logger: DingTalkLogger,
+        private readonly storagePath?: string,
     ) {}
 
     /* ---------------- 归档 ---------------- */
@@ -38,11 +39,10 @@ export class DingTalkClient {
 
     private archiveOutbound(record: Record<string, unknown>): void {
         try {
-            const dir =
-                process.platform === 'darwin'
-                    ? path.join(os.homedir(), 'Library', 'Logs', 'Alma')
-                    : path.join(os.tmpdir(), 'alma-logs');
-            if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+            // Standalone clients without a storage context do not write runtime archives.
+            if (!this.storagePath) return;
+            const dir = dataPaths(this.storagePath).logs;
+            if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
 
             const day = new Date().toISOString().slice(0, 10);
             const file = path.join(dir, `dingtalk-payloads-${day}.jsonl`);

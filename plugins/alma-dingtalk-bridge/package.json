@@ -1,6 +1,6 @@
 {
     "name": "alma-dingtalk-bridge",
-    "version": "2.0.0",
+    "version": "2.1.0",
     "type": "module",
     "description": "DingTalk channel bridge for Alma — Stream mode intake, full agent turn via Alma's internal WebSocket protocol",
     "author": {
@@ -10,10 +10,11 @@
     "main": "main.js",
     "scripts": {
         "build": "bun scripts/build.mjs",
-        "test:offline": "bun test/unit.mjs && bun test/format.mjs && bun test/sender.mjs && bun test/mention.mjs && bun test/fixes.mjs && bun test/notify.mjs && bun test/subscribe.mjs && bun test/access-control.mjs && bun test/security.mjs && bun test/reliability.mjs && bun test/lifecycle.mjs && bun test/authorization.mjs && bun test/media.mjs",
+        "test:offline": "bun test/unit.mjs && bun test/format.mjs && bun test/sender.mjs && bun test/mention.mjs && bun test/fixes.mjs && bun test/notify.mjs && bun test/subscribe.mjs && bun test/access-control.mjs && bun test/security.mjs && bun test/reliability.mjs && bun test/lifecycle.mjs && bun test/authorization.mjs && bun test/media.mjs && bun test/paths.mjs",
         "test:e2e": "ALMA_DT_SELFTEST=1 bun test/inbound.mjs",
         "test": "bun test:offline",
-        "check:bundle": "bun scripts/check-bundle.mjs"
+        "check:bundle": "bun scripts/check-bundle.mjs",
+        "migrate:data": "node scripts/migrate-data.mjs"
     },
     "dependencies": {
         "dingtalk-stream": "2.1.6-beta.1",

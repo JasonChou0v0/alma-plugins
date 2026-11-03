@@ -5,11 +5,12 @@
  * 用法：node dashboard/collect.mjs [--watch]
  */
 import * as fs from 'node:fs';
-import * as os from 'node:os';
+import { fileURLToPath } from 'node:url';
+import { dataPaths } from '../lib/paths.mjs';
 import * as path from 'node:path';
 
-const LOG_DIR = path.join(os.homedir(), 'Library', 'Logs', 'Alma');
-const OUT = path.join(path.dirname(new URL(import.meta.url).pathname), 'data.json');
+const { logs: LOG_DIR, dashboard: DASHBOARD_DIR, snapshot: OUT } = dataPaths(process.env.ALMA_DINGTALK_DATA_DIR);
+const HTML = path.join(path.dirname(fileURLToPath(import.meta.url)), 'index.html');
 
 /** 解析一行的字段串：conv=ok staff=- sender=xxx ... */
 function parseFields(raw) {
@@ -170,7 +171,9 @@ function collect() {
 
 function write() {
   const data = collect();
-  fs.writeFileSync(OUT, JSON.stringify(data, null, 2));
+  fs.mkdirSync(DASHBOARD_DIR, { recursive: true, mode: 0o700 });
+  fs.copyFileSync(HTML, path.join(DASHBOARD_DIR, 'index.html'));
+  fs.writeFileSync(OUT, JSON.stringify(data, null, 2), { mode: 0o600 });
   console.log(
     `[dashboard] ${data.total} 条（投递 ${data.delivered} / 命令 ${data.commands} / 丢弃 ${data.dropped}）→ ${OUT}`,
   );

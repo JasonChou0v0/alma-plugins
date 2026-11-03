@@ -24,8 +24,8 @@ const STATUS_BAR_ID = 'alma-dingtalk-bridge.status';
 export async function activate(context: PluginContext): Promise<PluginActivation> {
     const { settings, ui, commands } = context;
 
-    /* 宿主 console 不落盘，这里包一层写到 ~/Library/Logs/Alma/ */
-    const logger = createLogger(context.logger);
+    /* 插件自有产物统一放到宿主分配的 storagePath。 */
+    const logger = createLogger(context.logger, context.storagePath);
 
     logger.info('DingTalk Bridge 正在激活…');
     logger.info('日志文件:', logger.filePath());

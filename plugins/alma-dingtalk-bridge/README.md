@@ -120,6 +120,39 @@ WebSocket 的 `text_append` 同时承载正文和推理块。插件只接纳明�
 
 `dashboard/data.json` 是本地私密快照，已加入 `.gitignore`。看板不是持久消息数据库，不应对外开放。引用内容优先读取事件的 `text.repliedMsg.content.text`，保留正文和换行；缺失时才匹配同会话缓存（最多 500 条，每条摘要最多 500 字）。两者均无内容时明确标记引用原文缺失。未接入远端引用查询，不据此断言平台不存在查询接口。
 
+## 统一数据目录（2.1.0）
+
+插件自有运行产物统一使用宿主分配的 `context.storagePath`。macOS 默认是：
+
+```text
+~/Library/Application Support/Alma/plugin-storage/alma-dingtalk-bridge/
+├── storage.json       # 宿主管理的会话映射、工作区覆盖
+├── secrets.json       # 宿主管理的加密密钥
+├── logs/
+│   ├── dingtalk-bridge-YYYY-MM-DD.log
+│   └── dingtalk-payloads-YYYY-MM-DD.jsonl
+└── dashboard/
+    ├── index.html
+    └── data.json
+```
+
+`node dashboard/collect.mjs` 从统一 `logs/` 读取并将页面和快照写入统一 `dashboard/`，不再生成源码目录里的 `data.json`。自定义宿主数据路径时，采集器可用 `ALMA_DINGTALK_DATA_DIR` 指定同一目录。可以对该 `dashboard/` 启动仅监听 `127.0.0.1` 的静态服务。
+
+迁移旧日志前先停用插件和采集器，再执行：
+
+```bash
+node scripts/migrate-data.mjs --offline \
+  --data-dir "$HOME/Library/Application Support/Alma/plugin-storage/alma-dingtalk-bridge" \
+  --legacy-logs "$HOME/Library/Logs/Alma" \
+  --legacy-snapshot "dashboard/data.json"
+```
+
+迁移器只处理本插件命名的日志和指定看板快照；先校验冲突，再复制并逐字节验证，以符号链接替换旧文件路径。不同内容的同名目标会停止迁移，不会覆盖；重复执行幂等。其它插件日志、宿主数据库、密钥文件均不在迁移范围。普通日志仍按 UTC 日期分文件、超过 5MB 后截断；原始载荷归档仍需人工管理保留周期。
+
+安装目录由 Alma 管理，源码由 Git 仓库管理；共享的聊天数据库、图片原件和图库缓存也由各自宿主功能管理，不迁入插件目录。可在统一目录放符号链接作为管理入口，但不能把共享数据当成本插件独占文件删除。`links/` 下的本机管理链接不随插件发布。
+
+构建输出仍为源码目录的 `main.js`。构建一致性校验和测试使用源码目录内的临时目录，并在正常退出时清理；测试使用独立存储上下文，不写真实运行日志。
+
 ## 生成图片回传
 
 Agent 生成图片后调用 `alma send photo`，将图片挂到当前 Alma 线程。插件在本回合中捕获明确的 `file` 附件，读取本机图库缓存，调用钉钉媒体上传接口，再以同一个机器人向原群或原私聊发送 `sampleImageMsg`。只在收到有效 `processQueryKey` 后报告钉钉发送接口已接受，不等同于用户已读。

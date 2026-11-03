@@ -37,6 +37,13 @@ export function createContext(opts = {}) {
      * 测试专用 storage：内存态，不写磁盘。
      * 线上插件用的是 storage.local，这里隔离掉，测试不会污染真实会话映射。
      */
+    const tempParent = path.join(root, 'tmp');
+    fs.mkdirSync(tempParent, { recursive: true });
+    const storagePath = fs.mkdtempSync(path.join(tempParent, 'test-storage-'));
+    process.once('exit', () => {
+        fs.rmSync(storagePath, { recursive: true, force: true });
+        try { fs.rmdirSync(tempParent); } catch { /* preserve other files */ }
+    });
     const storage = createStorage();
     const commands = new Map();
     const notifications = [];
@@ -65,8 +72,8 @@ export function createContext(opts = {}) {
     const context = {
         id: 'alma-dingtalk-bridge',
         extensionPath: root,
-        storagePath: path.join(root, 'test/.storage'),
-        globalStoragePath: path.join(root, 'test/.storage'),
+        storagePath,
+        globalStoragePath: storagePath,
         logger: { info: say('info'), warn: say('warn'), error: say('error'), debug: () => {} },
         storage,
         settings: {

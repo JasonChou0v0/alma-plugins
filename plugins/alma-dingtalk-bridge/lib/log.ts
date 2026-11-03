@@ -2,11 +2,11 @@
  * 带文件落盘的日志器。
  *
  * Alma 主进程的 console 输出不落盘，排查问题时拿不到。
- * 这里把日志同步写到 ~/Library/Logs/Alma/dingtalk-bridge-YYYY-MM-DD.log
- * （非 macOS 回退到 os.tmpdir()），同时透传给宿主 logger。
+ * 这里把日志同步写到 context.storagePath/logs/dingtalk-bridge-YYYY-MM-DD.log，
+ * 同时透传给宿主 logger。
  */
 import * as fs from 'node:fs';
-import * as os from 'node:os';
+import { dataPaths } from './paths.mjs';
 import * as path from 'node:path';
 
 export interface HostLogger {
@@ -23,15 +23,6 @@ export interface Logger extends HostLogger {
 
 const MAX_FILE_BYTES = 5 * 1024 * 1024;
 
-function resolveLogDir(): string {
-    if (process.platform === 'darwin') {
-        return path.join(os.homedir(), 'Library', 'Logs', 'Alma');
-    }
-    if (process.platform === 'win32') {
-        return path.join(process.env.APPDATA || os.tmpdir(), 'Alma', 'logs');
-    }
-    return path.join(os.homedir(), '.local', 'state', 'alma', 'logs');
-}
 
 function format(value: unknown): string {
     if (typeof value === 'string') return value;
@@ -43,8 +34,8 @@ function format(value: unknown): string {
     }
 }
 
-export function createLogger(host: HostLogger): Logger {
-    const dir = resolveLogDir();
+export function createLogger(host: HostLogger, storagePath?: string): Logger {
+    const dir = dataPaths(storagePath).logs;
     let ready = false;
     let currentFile = '';
     let dirError: string | null = null;
@@ -52,7 +43,7 @@ export function createLogger(host: HostLogger): Logger {
     const ensureDir = (): boolean => {
         if (dirError) return false;
         try {
-            if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+            if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
             ready = true;
             return true;
         } catch (e) {
@@ -72,11 +63,11 @@ export function createLogger(host: HostLogger): Logger {
             const file = fileFor();
             /* 超限后简单截断，避免无限增长 */
             if (fs.existsSync(file) && fs.statSync(file).size > MAX_FILE_BYTES) {
-                fs.writeFileSync(file, '');
+                fs.writeFileSync(file, '', { mode: 0o600 });
             }
             currentFile = file;
             const line = `${new Date().toISOString()} [${level}] ${args.map(format).join(' ')}\n`;
-            fs.appendFileSync(file, line);
+            fs.appendFileSync(file, line, { mode: 0o600 });
         } catch {
             /* 落盘失败不能影响主流程 */
         }

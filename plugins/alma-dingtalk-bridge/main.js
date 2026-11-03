@@ -11827,11 +11827,11 @@ var require_mime_types = __commonJS((exports) => {
     }
     return exts[0];
   }
-  function lookup(path) {
-    if (!path || typeof path !== "string") {
+  function lookup(path2) {
+    if (!path2 || typeof path2 !== "string") {
       return false;
     }
-    var extension3 = extname("x." + path).toLowerCase().substr(1);
+    var extension3 = extname("x." + path2).toLowerCase().substr(1);
     if (!extension3) {
       return false;
     }
@@ -12782,7 +12782,7 @@ var require_populate = __commonJS((exports, module) => {
 var require_form_data = __commonJS((exports, module) => {
   var CombinedStream = require_combined_stream();
   var util = __require("util");
-  var path = __require("path");
+  var path2 = __require("path");
   var http = __require("http");
   var https = __require("https");
   var parseUrl = __require("url").parse;
@@ -12912,11 +12912,11 @@ var require_form_data = __commonJS((exports, module) => {
   FormData2.prototype._getContentDisposition = function(value, options) {
     var filename;
     if (typeof options.filepath === "string") {
-      filename = path.normalize(options.filepath).replace(/\\/g, "/");
+      filename = path2.normalize(options.filepath).replace(/\\/g, "/");
     } else if (options.filename || value && (value.name || value.path)) {
-      filename = path.basename(options.filename || value && (value.name || value.path));
+      filename = path2.basename(options.filename || value && (value.name || value.path));
     } else if (value && value.readable && hasOwn(value, "httpVersion")) {
-      filename = path.basename(value.client._httpMessage.path || "");
+      filename = path2.basename(value.client._httpMessage.path || "");
     }
     if (filename) {
       return 'filename="' + escapeHeaderParam(filename) + '"';
@@ -13726,12 +13726,12 @@ var require_promisify = __commonJS((exports) => {
   Object.defineProperty(exports, "__esModule", { value: true });
   function promisify(fn) {
     return function(req, opts) {
-      return new Promise((resolve, reject) => {
+      return new Promise((resolve2, reject) => {
         fn.call(this, req, opts, (err, rtn) => {
           if (err) {
             reject(err);
           } else {
-            resolve(rtn);
+            resolve2(rtn);
           }
         });
       });
@@ -13925,7 +13925,7 @@ var require_parse_proxy_response = __commonJS((exports) => {
   var debug_1 = __importDefault(require_src());
   var debug = debug_1.default("https-proxy-agent:parse-proxy-response");
   function parseProxyResponse(socket) {
-    return new Promise((resolve, reject) => {
+    return new Promise((resolve2, reject) => {
       let buffersLength = 0;
       const buffers = [];
       function read() {
@@ -13968,7 +13968,7 @@ var require_parse_proxy_response = __commonJS((exports) => {
 `));
         const statusCode = +firstLine.split(" ")[1];
         debug("got proxy server response: %o", firstLine);
-        resolve({
+        resolve2({
           statusCode,
           buffered
         });
@@ -13986,11 +13986,11 @@ var require_parse_proxy_response = __commonJS((exports) => {
 var require_agent = __commonJS((exports) => {
   var __awaiter = exports && exports.__awaiter || function(thisArg, _arguments, P, generator) {
     function adopt(value) {
-      return value instanceof P ? value : new P(function(resolve) {
-        resolve(value);
+      return value instanceof P ? value : new P(function(resolve2) {
+        resolve2(value);
       });
     }
-    return new (P || (P = Promise))(function(resolve, reject) {
+    return new (P || (P = Promise))(function(resolve2, reject) {
       function fulfilled(value) {
         try {
           step(generator.next(value));
@@ -14006,7 +14006,7 @@ var require_agent = __commonJS((exports) => {
         }
       }
       function step(result) {
-        result.done ? resolve(result.value) : adopt(result.value).then(fulfilled, rejected);
+        result.done ? resolve2(result.value) : adopt(result.value).then(fulfilled, rejected);
       }
       step((generator = generator.apply(thisArg, _arguments || [])).next());
     });
@@ -14653,8 +14653,26 @@ var require_follow_redirects = __commonJS((exports, module) => {
 
 // lib/bridge.ts
 import * as fs2 from "node:fs";
-import * as os2 from "node:os";
-import * as path2 from "node:path";
+
+// lib/paths.mjs
+import * as os from "node:os";
+import * as path from "node:path";
+function defaultDataDir() {
+  const userData = process.platform === "darwin" ? path.join(os.homedir(), "Library", "Application Support", "Alma") : process.platform === "win32" ? path.join(process.env.APPDATA || path.join(os.homedir(), "AppData", "Roaming"), "Alma") : path.join(process.env.XDG_CONFIG_HOME || path.join(os.homedir(), ".config"), "Alma");
+  return path.join(userData, "plugin-storage", "alma-dingtalk-bridge");
+}
+function dataPaths(storagePath = defaultDataDir()) {
+  const root = path.resolve(storagePath);
+  return {
+    root,
+    logs: path.join(root, "logs"),
+    dashboard: path.join(root, "dashboard"),
+    snapshot: path.join(root, "dashboard", "data.json")
+  };
+}
+
+// lib/bridge.ts
+import * as path3 from "node:path";
 
 // node_modules/dingtalk-stream/dist/constants.mjs
 var GATEWAY_URL = "https://api.dingtalk.com/v1.0/gateway/connections/open";
@@ -15861,10 +15879,10 @@ function isVisitable(thing) {
 function removeBrackets(key) {
   return utils_default.endsWith(key, "[]") ? key.slice(0, -2) : key;
 }
-function renderKey(path, key, dots) {
-  if (!path)
+function renderKey(path2, key, dots) {
+  if (!path2)
     return key;
-  return path.concat(key).map(function each(token, i) {
+  return path2.concat(key).map(function each(token, i) {
     token = removeBrackets(token);
     return !dots && i ? "[" + token + "]" : token;
   }).join(dots ? "." : "");
@@ -15940,13 +15958,13 @@ function toFormData(obj, formData, options) {
       return currentValue;
     });
   }
-  function defaultVisitor(value, key, path) {
+  function defaultVisitor(value, key, path2) {
     let arr = value;
     if (utils_default.isReactNative(formData) && utils_default.isReactNativeBlob(value)) {
-      formData.append(renderKey(path, key, dots), convertValue(value));
+      formData.append(renderKey(path2, key, dots), convertValue(value));
       return false;
     }
-    if (value && !path && typeof value === "object") {
+    if (value && !path2 && typeof value === "object") {
       if (utils_default.endsWith(key, "{}")) {
         key = metaTokens ? key : key.slice(0, -2);
         value = stringifyWithDepthLimit(value, 1);
@@ -15961,7 +15979,7 @@ function toFormData(obj, formData, options) {
     if (isVisitable(value)) {
       return true;
     }
-    formData.append(renderKey(path, key, dots), convertValue(value));
+    formData.append(renderKey(path2, key, dots), convertValue(value));
     return false;
   }
   const exposedHelpers = Object.assign(predicates, {
@@ -15969,18 +15987,18 @@ function toFormData(obj, formData, options) {
     convertValue,
     isVisitable
   });
-  function build(value, path, depth = 0) {
+  function build(value, path2, depth = 0) {
     if (utils_default.isUndefined(value))
       return;
     throwIfMaxDepthExceeded(depth);
     if (stack.indexOf(value) !== -1) {
-      throw new Error("Circular reference detected in " + path.join("."));
+      throw new Error("Circular reference detected in " + path2.join("."));
     }
     stack.push(value);
     utils_default.forEach(value, function each(el, key) {
-      const result = !(utils_default.isUndefined(el) || el === null) && visitor.call(formData, el, utils_default.isString(key) ? key.trim() : key, path, exposedHelpers);
+      const result = !(utils_default.isUndefined(el) || el === null) && visitor.call(formData, el, utils_default.isString(key) ? key.trim() : key, path2, exposedHelpers);
       if (result === true) {
-        build(el, path ? path.concat(key) : [key], depth + 1);
+        build(el, path2 ? path2.concat(key) : [key], depth + 1);
       }
     });
     stack.pop();
@@ -16242,7 +16260,7 @@ var platform_default = {
 // node_modules/axios/lib/helpers/toURLEncodedForm.js
 function toURLEncodedForm(data, options) {
   return toFormData_default(data, new platform_default.classes.URLSearchParams, {
-    visitor: function(value, key, path, helpers) {
+    visitor: function(value, key, path2, helpers) {
       if (platform_default.isNode && utils_default.isBuffer(value)) {
         this.append(key, value.toString("base64"));
         return false;
@@ -16261,14 +16279,14 @@ function throwIfDepthExceeded(index) {
   }
 }
 function parsePropPath(name) {
-  const path = [];
+  const path2 = [];
   const pattern = /[^.[\]]+|\[([^.[\]]*)]/g;
   let match;
   while ((match = pattern.exec(name)) !== null) {
-    throwIfDepthExceeded(path.length);
-    path.push(match[0] === "[]" ? "" : match[1] || match[0]);
+    throwIfDepthExceeded(path2.length);
+    path2.push(match[0] === "[]" ? "" : match[1] || match[0]);
   }
-  return path;
+  return path2;
 }
 function arrayToObject(arr) {
   const obj = {};
@@ -16302,13 +16320,13 @@ function normalizeArrays(obj) {
   return obj;
 }
 function formDataToJSON(formData) {
-  function buildPath(path, value, target, index) {
+  function buildPath(path2, value, target, index) {
     throwIfDepthExceeded(index);
-    let name = path[index++];
+    let name = path2[index++];
     if (name === "__proto__")
       return true;
     const isNumericKey = Number.isFinite(+name);
-    const isLast = index >= path.length;
+    const isLast = index >= path2.length;
     name = !name && utils_default.isArray(target) ? target.length : name;
     if (isLast) {
       if (utils_default.hasOwnProp(target, name)) {
@@ -16322,7 +16340,7 @@ function formDataToJSON(formData) {
     if (!utils_default.hasOwnProp(target, name) || !utils_default.isObject(target[name])) {
       target[name] = [];
     }
-    const result = buildPath(path, value, target[name], index);
+    const result = buildPath(path2, value, target[name], index);
     if (result && utils_default.isArray(target[name])) {
       target[name] = arrayToObject(target[name]);
     }
@@ -16493,10 +16511,10 @@ class CanceledError extends AxiosError_default {
 var CanceledError_default = CanceledError;
 
 // node_modules/axios/lib/core/settle.js
-function settle(resolve, reject, response) {
+function settle(resolve2, reject, response) {
   const validateStatus2 = response.config.validateStatus;
   if (!response.status || !validateStatus2 || validateStatus2(response.status)) {
-    resolve(response);
+    resolve2(response);
   } else {
     reject(new AxiosError_default("Request failed with status code " + response.status, response.status >= 400 && response.status < 500 ? AxiosError_default.ERR_BAD_REQUEST : AxiosError_default.ERR_BAD_RESPONSE, response.config, response.request, response));
   }
@@ -17934,7 +17952,7 @@ function setProxy(options, configProxy, location, isRedirect, configHttpsAgent, 
 }
 var isHttpAdapterSupported = typeof process !== "undefined" && utils_default.kindOf(process) === "process";
 var wrapAsync = (asyncExecutor) => {
-  return new Promise((resolve, reject) => {
+  return new Promise((resolve2, reject) => {
     let onDone;
     let isDone;
     const done = (value, isRejected) => {
@@ -17945,7 +17963,7 @@ var wrapAsync = (asyncExecutor) => {
     };
     const _resolve = (value) => {
       done(value);
-      resolve(value);
+      resolve2(value);
     };
     const _reject = (reason) => {
       done(reason, true);
@@ -18016,7 +18034,7 @@ var http2Transport = {
   }
 };
 var http_default = isHttpAdapterSupported && function httpAdapter(config) {
-  return wrapAsync(async function dispatchHttpRequest(resolve, reject, onDone) {
+  return wrapAsync(async function dispatchHttpRequest(resolve2, reject, onDone) {
     const own2 = (key) => utils_default.getSafeProp(config, key);
     const transitional = own2("transitional") || transitional_default;
     let data = own2("data");
@@ -18127,7 +18145,7 @@ var http_default = isHttpAdapterSupported && function httpAdapter(config) {
       }
       let convertedData;
       if (method !== "GET") {
-        return settle(resolve, reject, {
+        return settle(resolve2, reject, {
           status: 405,
           statusText: "method not allowed",
           headers: {},
@@ -18152,7 +18170,7 @@ var http_default = isHttpAdapterSupported && function httpAdapter(config) {
       } else if (responseType === "stream") {
         convertedData = stream3.Readable.from(convertedData);
       }
-      return settle(resolve, reject, {
+      return settle(resolve2, reject, {
         data: convertedData,
         status: 200,
         statusText: "OK",
@@ -18234,9 +18252,9 @@ var http_default = isHttpAdapterSupported && function httpAdapter(config) {
       auth = urlUsername + ":" + urlPassword;
     }
     auth && headers.delete("authorization");
-    let path;
+    let path2;
     try {
-      path = buildURL(parsed.pathname + parsed.search, own2("params"), own2("paramsSerializer")).replace(/^\?/, "");
+      path2 = buildURL(parsed.pathname + parsed.search, own2("params"), own2("paramsSerializer")).replace(/^\?/, "");
     } catch (err) {
       return reject(AxiosError_default.from(err, AxiosError_default.ERR_BAD_REQUEST, config, null, null, {
         url: own2("url"),
@@ -18248,7 +18266,7 @@ var http_default = isHttpAdapterSupported && function httpAdapter(config) {
       http2Options = Object.assign(Object.create(null), http2Options, { lookup });
     }
     const options = Object.assign(Object.create(null), {
-      path,
+      path: path2,
       method,
       headers: toByteStringHeaderObject(headers),
       agents: { http: httpAgent, https: httpsAgent },
@@ -18427,7 +18445,7 @@ var http_default = isHttpAdapterSupported && function httpAdapter(config) {
           });
         }
         response.data = responseStream;
-        settle(resolve, reject, response);
+        settle(resolve2, reject, response);
       } else {
         const responseBuffer = [];
         let totalResponseBytes = 0;
@@ -18466,7 +18484,7 @@ var http_default = isHttpAdapterSupported && function httpAdapter(config) {
           } catch (err) {
             return reject(AxiosError_default.from(err, null, config, response.request, response));
           }
-          settle(resolve, reject, response);
+          settle(resolve2, reject, response);
         });
       }
       abortEmitter.once("abort", (err) => {
@@ -18578,15 +18596,15 @@ var decodeCookieValue = (value) => {
   }
 };
 var cookies_default = platform_default.hasStandardBrowserEnv ? {
-  write(name, value, expires, path, domain, secure, sameSite) {
+  write(name, value, expires, path2, domain, secure, sameSite) {
     if (typeof document === "undefined")
       return;
     const cookie = [`${name}=${encodeURIComponent(value)}`];
     if (utils_default.isNumber(expires)) {
       cookie.push(`expires=${new Date(expires).toUTCString()}`);
     }
-    if (utils_default.isString(path)) {
-      cookie.push(`path=${path}`);
+    if (utils_default.isString(path2)) {
+      cookie.push(`path=${path2}`);
     }
     if (utils_default.isString(domain)) {
       cookie.push(`domain=${domain}`);
@@ -18914,7 +18932,7 @@ var resolveConfig_default = resolveConfig;
 // node_modules/axios/lib/adapters/xhr.js
 var isXHRAdapterSupported = typeof XMLHttpRequest !== "undefined";
 var xhr_default = isXHRAdapterSupported && function(config) {
-  return new Promise(function dispatchXhrRequest(resolve, reject) {
+  return new Promise(function dispatchXhrRequest(resolve2, reject) {
     let useAsyncXsrf;
     try {
       const store = platform_default.hasStandardBrowserEnv && typeof window !== "undefined" && window.cookieStore;
@@ -18996,7 +19014,7 @@ var xhr_default = isXHRAdapterSupported && function(config) {
         request
       };
       settle(function _resolve(value) {
-        resolve(value);
+        resolve2(value);
         done();
       }, function _reject(err) {
         reject(err);
@@ -19708,8 +19726,8 @@ var factory = (env) => {
         }
       }
       !isStreamResponse && unsubscribe && unsubscribe();
-      return await new Promise((resolve, reject) => {
-        settle(resolve, reject, {
+      return await new Promise((resolve2, reject) => {
+        settle(resolve2, reject, {
           data: responseData,
           headers: AxiosHeaders_default.from(response.headers),
           status: response.status,
@@ -20175,8 +20193,8 @@ class CancelToken {
       throw new TypeError("executor must be a function.");
     }
     let resolvePromise;
-    this.promise = new Promise(function promiseExecutor(resolve) {
-      resolvePromise = resolve;
+    this.promise = new Promise(function promiseExecutor(resolve2) {
+      resolvePromise = resolve2;
     });
     const token = this;
     this.promise.then((cancel) => {
@@ -20190,9 +20208,9 @@ class CancelToken {
     });
     this.promise.then = (onfulfilled) => {
       let _resolve;
-      const promise = new Promise((resolve) => {
-        token.subscribe(resolve);
-        _resolve = resolve;
+      const promise = new Promise((resolve2) => {
+        token.subscribe(resolve2);
+        _resolve = resolve2;
       }).then(onfulfilled);
       promise.cancel = function reject() {
         token.unsubscribe(_resolve);
@@ -20526,7 +20544,7 @@ class DWClient extends EventEmitter2 {
     }, delay);
   }
   _connect() {
-    return new Promise((resolve, reject) => {
+    return new Promise((resolve2, reject) => {
       this.printDebug("Connecting to dingtalk websocket @ " + this.dw_url);
       try {
         this.socket = new wrapper_default(this.dw_url, this.sslopts);
@@ -20554,7 +20572,7 @@ class DWClient extends EventEmitter2 {
           }, this.heartbeat_interval);
         }
         settled = true;
-        resolve();
+        resolve2();
       });
       this.socket.on("pong", () => {
         this.heartbeat();
@@ -20744,15 +20762,15 @@ class AlmaApi {
     this.baseUrl = baseUrl;
     this.logger = logger;
   }
-  async req(path, init) {
-    const url2 = `${this.baseUrl()}${path}`;
+  async req(path2, init) {
+    const url2 = `${this.baseUrl()}${path2}`;
     const res = await fetch(url2, {
       ...init,
       headers: { "Content-Type": "application/json", ...init?.headers ?? {} }
     });
     if (!res.ok) {
       const body = await res.text().catch(() => "");
-      throw new Error(`Alma API ${init?.method ?? "GET"} ${path} → ${res.status} ${body.slice(0, 200)}`);
+      throw new Error(`Alma API ${init?.method ?? "GET"} ${path2} → ${res.status} ${body.slice(0, 200)}`);
     }
     if (res.status === 204)
       return;
@@ -21426,8 +21444,7 @@ class AlmaSocket {
 
 // lib/dingtalk-client.ts
 import * as fs from "node:fs";
-import * as os from "node:os";
-import * as path from "node:path";
+import * as path2 from "node:path";
 var MAX_CHUNK = 4000;
 var TOKEN_URL = "https://api.dingtalk.com/v1.0/oauth2/accessToken";
 var SEND_URL = "https://api.dingtalk.com/v1.0/robot/oToMessages/batchSend";
@@ -21436,19 +21453,23 @@ var GROUP_SEND_URL = "https://api.dingtalk.com/v1.0/robot/groupMessages/send";
 class DingTalkClient {
   credentials;
   logger;
+  storagePath;
   token = null;
   tokenExpiry = 0;
-  constructor(credentials, logger) {
+  constructor(credentials, logger, storagePath) {
     this.credentials = credentials;
     this.logger = logger;
+    this.storagePath = storagePath;
   }
   archiveOutbound(record) {
     try {
-      const dir = process.platform === "darwin" ? path.join(os.homedir(), "Library", "Logs", "Alma") : path.join(os.tmpdir(), "alma-logs");
+      if (!this.storagePath)
+        return;
+      const dir = dataPaths(this.storagePath).logs;
       if (!fs.existsSync(dir))
-        fs.mkdirSync(dir, { recursive: true });
+        fs.mkdirSync(dir, { recursive: true, mode: 448 });
       const day = new Date().toISOString().slice(0, 10);
-      const file = path.join(dir, `dingtalk-payloads-${day}.jsonl`);
+      const file = path2.join(dir, `dingtalk-payloads-${day}.jsonl`);
       fs.appendFileSync(file, `${JSON.stringify({ at: new Date().toISOString(), ...record })}
 `, { mode: 384 });
       fs.chmodSync(file, 384);
@@ -21812,7 +21833,7 @@ class DingTalkBridge {
   botName;
   botDingTalkId;
   msgCache = new Map;
-  logDir = process.platform === "darwin" ? path2.join(os2.homedir(), "Library", "Logs", "Alma") : path2.join(os2.tmpdir(), "alma-logs");
+  logDir;
   startedAt = null;
   lastMessageAt = null;
   lastError = null;
@@ -21827,6 +21848,7 @@ class DingTalkBridge {
   constructor(deps) {
     this.deps = deps;
     this.ctx = deps.context;
+    this.logDir = this.ctx.storagePath ? dataPaths(this.ctx.storagePath).logs : undefined;
     this.cfg = deps.config;
     this.authorization = new AuthorizationCommands(this.cfg, this.ctx.settings);
     this.api = new AlmaApi(() => `http://127.0.0.1:${this.cfg().almaApiPort}`, this.ctx.logger);
@@ -21837,7 +21859,7 @@ class DingTalkBridge {
         clientSecret: this.secretClientSecret || "",
         robotCode: c.robotCode || c.clientId
       };
-    }, this.ctx.logger);
+    }, this.ctx.logger, this.ctx.storagePath);
     this.socket = new AlmaSocket(() => `ws://127.0.0.1:${this.cfg().almaApiPort}/ws/threads`, this.ctx.logger, {
       onTextDelta: (turn, _text) => {
         if (this.cfg().streamingReply)
@@ -22494,8 +22516,8 @@ class DingTalkBridge {
         finished: false
       };
       const quoted = this.resolveQuotedMessage(payload);
-      const completed = new Promise((resolve) => {
-        turn.settled = resolve;
+      const completed = new Promise((resolve2) => {
+        turn.settled = resolve2;
       });
       await this.socket.submit(turn, model, text, {
         nick: payload.senderNick,
@@ -22525,10 +22547,12 @@ class DingTalkBridge {
   archivePayload(payload, downstream) {
     try {
       const dir = this.logDir;
+      if (!dir)
+        return;
       if (!fs2.existsSync(dir))
-        fs2.mkdirSync(dir, { recursive: true });
+        fs2.mkdirSync(dir, { recursive: true, mode: 448 });
       const day = new Date().toISOString().slice(0, 10);
-      const file = path2.join(dir, `dingtalk-payloads-${day}.jsonl`);
+      const file = path3.join(dir, `dingtalk-payloads-${day}.jsonl`);
       const record = {
         receivedAt: new Date().toISOString(),
         headers: downstream?.headers ?? null,
@@ -22799,18 +22823,8 @@ class DingTalkBridge {
 
 // lib/log.ts
 import * as fs3 from "node:fs";
-import * as os3 from "node:os";
-import * as path3 from "node:path";
+import * as path4 from "node:path";
 var MAX_FILE_BYTES = 5 * 1024 * 1024;
-function resolveLogDir() {
-  if (process.platform === "darwin") {
-    return path3.join(os3.homedir(), "Library", "Logs", "Alma");
-  }
-  if (process.platform === "win32") {
-    return path3.join(process.env.APPDATA || os3.tmpdir(), "Alma", "logs");
-  }
-  return path3.join(os3.homedir(), ".local", "state", "alma", "logs");
-}
 function format(value) {
   if (typeof value === "string")
     return value;
@@ -22822,8 +22836,8 @@ function format(value) {
     return String(value);
   }
 }
-function createLogger(host) {
-  const dir = resolveLogDir();
+function createLogger(host, storagePath) {
+  const dir = dataPaths(storagePath).logs;
   let ready = false;
   let currentFile = "";
   let dirError = null;
@@ -22832,7 +22846,7 @@ function createLogger(host) {
       return false;
     try {
       if (!fs3.existsSync(dir))
-        fs3.mkdirSync(dir, { recursive: true });
+        fs3.mkdirSync(dir, { recursive: true, mode: 448 });
       ready = true;
       return true;
     } catch (e) {
@@ -22842,7 +22856,7 @@ function createLogger(host) {
   };
   const fileFor = () => {
     const day = new Date().toISOString().slice(0, 10);
-    return path3.join(dir, `dingtalk-bridge-${day}.log`);
+    return path4.join(dir, `dingtalk-bridge-${day}.log`);
   };
   const write = (level, args) => {
     if (!ready && !ensureDir())
@@ -22850,12 +22864,12 @@ function createLogger(host) {
     try {
       const file = fileFor();
       if (fs3.existsSync(file) && fs3.statSync(file).size > MAX_FILE_BYTES) {
-        fs3.writeFileSync(file, "");
+        fs3.writeFileSync(file, "", { mode: 384 });
       }
       currentFile = file;
       const line = `${new Date().toISOString()} [${level}] ${args.map(format).join(" ")}
 `;
-      fs3.appendFileSync(file, line);
+      fs3.appendFileSync(file, line, { mode: 384 });
     } catch {}
   };
   return {
@@ -22875,7 +22889,7 @@ function createLogger(host) {
       write("DEBUG", a);
       host.debug?.(...a);
     },
-    filePath: () => currentFile || (ready ? fileFor() : path3.join(dir, "dingtalk-bridge-YYYY-MM-DD.log"))
+    filePath: () => currentFile || (ready ? fileFor() : path4.join(dir, "dingtalk-bridge-YYYY-MM-DD.log"))
   };
 }
 
@@ -22883,7 +22897,7 @@ function createLogger(host) {
 var STATUS_BAR_ID = "alma-dingtalk-bridge.status";
 async function activate(context) {
   const { settings, ui, commands } = context;
-  const logger = createLogger(context.logger);
+  const logger = createLogger(context.logger, context.storagePath);
   logger.info("DingTalk Bridge 正在激活…");
   logger.info("日志文件:", logger.filePath());
   const readConfig = () => {

@@ -2,7 +2,7 @@
  * 桥接核心：钉钉消息 → Alma agent → 钉钉回复
  */
 import * as fs from 'node:fs';
-import * as os from 'node:os';
+import { dataPaths } from './paths.mjs';
 import * as path from 'node:path';
 import { DWClient, TOPIC_ROBOT } from 'dingtalk-stream';
 import type { PluginContext } from 'alma-plugin-api';
@@ -71,9 +71,7 @@ export class DingTalkBridge {
     private readonly msgCache = new Map<string, { nick: string; text: string; at: number }>();
 
     /** 载荷归档目录 */
-    private readonly logDir: string = process.platform === 'darwin'
-        ? path.join(os.homedir(), 'Library', 'Logs', 'Alma')
-        : path.join(os.tmpdir(), 'alma-logs');
+    private readonly logDir?: string;
     private startedAt: number | null = null;
     private lastMessageAt: number | null = null;
     private lastError: string | null = null;
@@ -96,6 +94,7 @@ export class DingTalkBridge {
 
     constructor(private readonly deps: BridgeDeps) {
         this.ctx = deps.context;
+        this.logDir = this.ctx.storagePath ? dataPaths(this.ctx.storagePath).logs : undefined;
         this.cfg = deps.config;
         this.authorization = new AuthorizationCommands(this.cfg, this.ctx.settings);
 
@@ -115,6 +114,7 @@ export class DingTalkBridge {
                 };
             },
             this.ctx.logger,
+            this.ctx.storagePath,
         );
 
         this.socket = new AlmaSocket(
@@ -982,13 +982,14 @@ export class DingTalkBridge {
     /**
      * 把原始载荷完整写入归档文件。
      *
-     * 按天分文件：~/Library/Logs/Alma/dingtalk-payloads-YYYY-MM-DD.jsonl
+     * 按天分文件：context.storagePath/logs/dingtalk-payloads-YYYY-MM-DD.jsonl
      * 每行一条 JSON，方便 grep / jq / 看板读取。
      */
     private archivePayload(payload: any, downstream: any): void {
         try {
             const dir = this.logDir;
-            if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+            if (!dir) return;
+            if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
 
             const day = new Date().toISOString().slice(0, 10);
             const file = path.join(dir, `dingtalk-payloads-${day}.jsonl`);
