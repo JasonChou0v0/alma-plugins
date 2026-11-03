@@ -73,7 +73,7 @@ function mkMsg(text, opts = {}) {
             conversationId: opts.chatId ?? `cid_v4_${seq}`,
             conversationType: opts.convType ?? '2',
             conversationTitle: opts.title ?? '[TEST] 验证群',
-            senderStaffId: opts.staff ?? `staff_${seq}`,
+            senderUnionId: opts.staff ?? `staff_${seq}`,
             senderNick: opts.nick ?? `用户${seq}`,
             msgId: opts.msgId ?? `msg_v4_${Date.now()}_${seq}`,
             msgtype: 'text',

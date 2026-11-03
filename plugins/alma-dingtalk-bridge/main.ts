@@ -42,9 +42,9 @@ export async function activate(context: PluginContext): Promise<PluginActivation
             }
         };
 
-        const rawStaff = String(get<string>('allowedStaffIds', '') ?? '');
+        const rawUnion = String(get<string>('allowedUnionIds', '') ?? '');
         const rawConv = String(get<string>('allowedConversationIds', '') ?? '');
-        const rawAdmin = String(get<string>('adminStaffIds', '') ?? '');
+        const rawAdmin = String(get<string>('adminUnionIds', '') ?? '');
         const mode = String(get<string>('mode', 'per-chat')) as SessionMode;
         const rawPolicy = String(get<string>('groupAgentPolicy', 'refuse')) as GroupAgentPolicy;
         /*
@@ -68,7 +68,7 @@ export async function activate(context: PluginContext): Promise<PluginActivation
             defaultModel: String(get<string>('defaultModel', '') ?? '').trim(),
             workspaceId: String(get<string>('workspaceId', '') ?? '').trim(),
             mode: mode === 'per-sender' || mode === 'single' ? mode : 'per-chat',
-            allowedStaffIds: rawStaff
+            allowedUnionIds: rawUnion
                 .split(',')
                 .map((s) => s.trim())
                 .filter(Boolean),
@@ -76,7 +76,7 @@ export async function activate(context: PluginContext): Promise<PluginActivation
                 .split(',')
                 .map((s) => s.trim())
                 .filter(Boolean),
-            adminStaffIds: rawAdmin
+            adminUnionIds: rawAdmin
                 .split(',')
                 .map((s) => s.trim())
                 .filter(Boolean),
@@ -218,26 +218,26 @@ export async function activate(context: PluginContext): Promise<PluginActivation
 
     const toolDisposable = context.tools.register('dingtalk_notify', {
         description:
-            '通过钉钉给指定用户发送一条消息。需要插件已配置 AppKey/AppSecret，且你知道对方的 senderStaffId。',
+            '通过钉钉给指定用户发送一条消息。需要插件已配置 AppKey/AppSecret，且你知道对方的 UnionID。',
         parameters: {
             type: 'object',
             properties: {
-                staffId: { type: 'string', description: '钉钉用户的 senderStaffId' },
+                unionId: { type: 'string', description: '钉钉用户的 UnionID（授权标识）' },
                 message: { type: 'string', description: '要发送的文本内容' },
             },
-            required: ['staffId', 'message'],
+            required: ['unionId', 'message'],
         } as const,
         /*
          * 第二个参数是宿主核验过的 ToolContext = { threadId, messageId, abortSignal? }。
          * 把 threadId 透传给 notify，使「禁用工具」线程里的主动发信也被拒绝（防绕过）。
          */
         execute: async (params: any, toolCtx: any) => {
-            const { staffId, message } = params as { staffId: string; message: string };
+            const { unionId, message } = params as { unionId: string; message: string };
             const threadId = typeof toolCtx?.threadId === 'string' ? toolCtx.threadId : undefined;
-            const ok = await bridge.notify(staffId, message, threadId ? { threadId } : undefined);
+            const ok = await bridge.notify(unionId, message, threadId ? { threadId } : undefined);
             return ok.ok
-                ? { success: true, message: `已发送给 ${staffId}` }
-                : { success: false, error: '发送失败，请检查凭据与 staffId' };
+                ? { success: true, message: `已发送给 ${unionId}` }
+                : { success: false, error: ok.error || '发送失败，请检查凭据与 UnionID' };
         },
     });
 

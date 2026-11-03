@@ -70,10 +70,10 @@ console.log('\n[问题2: 引用消息 @机器人]');
     const r3 = finish('正常内容', '@豆豆 正常内容', {});
     check('有正文时不受影响', r3 === '正常内容');
 
-    /* 关键：只要有 webhook 就该处理，不能因为 senderStaffId 缺失丢弃 */
+    /* 关键：只要有 webhook 就该处理，不能因为 senderUnionId 缺失丢弃 */
     const shouldHandle = (p) => Boolean(p.conversationId) && Boolean(p.sessionWebhook);
     check(
-        '缺 senderStaffId 但有 webhook 仍处理',
+        '缺 senderUnionId 但有 webhook 仍处理',
         shouldHandle({ conversationId: 'c', sessionWebhook: 'w' }) === true,
     );
     check('缺 webhook 才丢弃', shouldHandle({ conversationId: 'c' }) === false);

@@ -57,7 +57,7 @@ try {
     assert.equal(body.openConversationId,'c');assert.deepEqual(JSON.parse(body.msgParam),{photoURL:'test-media'});
   });
   const privateResult=await client.sendImage({staffId:'owner'},image,()=>true);
-  check('私聊只路由到原senderStaffId',()=>{
+  check('私聊只路由到原senderUnionId',()=>{
     assert(privateResult.ok);const c=calls.at(-1);assert(c.url.endsWith('/oToMessages/batchSend'));
     assert.deepEqual(JSON.parse(c.init.body).userIds,['owner']);
   });
@@ -75,7 +75,29 @@ try {
   const failure=await client.sendImage({conversationId:'c'},image,()=>true);
   check('网络异常不泄漏令牌',()=>{assert(!failure.ok);assert(!failure.error.includes('test-token'));});
 
-  const cfg={allowedStaffIds:['owner'],allowedConversationIds:['c'],groupAgentPolicy:'fullTools',almaApiPort:23001};
+  let unionCalls=[];let unionAllowed=true;
+  globalThis.fetch=async(url,init)=>{
+    unionCalls.push({url:String(url),body:JSON.parse(init.body)});
+    if(String(url).includes('/getbyunionid'))return Response.json({errcode:0,result:{userid:'transport-only-id'}});
+    return Response.json({processQueryKey:'sent'});
+  };
+  const unionSent=await client.sendToUnionUser('authorized-union','hello',()=>unionAllowed);
+  check('通知按UnionID鉴权，再将其转换为独立投递地址',()=>{
+    assert(unionSent.ok);assert.deepEqual(unionCalls[0].body,{unionid:'authorized-union'});
+    assert.deepEqual(unionCalls[1].body.userIds,['transport-only-id']);
+  });
+  unionCalls=[];unionAllowed=false;
+  const noUnion=await client.sendToUnionUser('unauthorized','hello',()=>unionAllowed);
+  check('未授权UnionID不触发转换或发信',()=>{assert(!noUnion.ok);assert.equal(unionCalls.length,0);});
+  unionAllowed=true;let converted=0;
+  globalThis.fetch=async()=>{converted++;unionAllowed=false;return Response.json({errcode:0,result:{userid:'transport-only-id'}});};
+  const revokeUnion=await client.sendToUnionUser('authorized-union','hello',()=>unionAllowed);
+  check('地址解析后撤销UnionID也不能发信',()=>{assert(!revokeUnion.ok);assert.equal(converted,1);});
+  let failures=0;globalThis.fetch=async()=>{failures++;return Response.json({errcode:60121});};
+  const crossOrg=await client.sendToUnionUser('external-union','hello',()=>true);
+  check('跨组织无法解析投递地址时不误用UnionID发送',()=>{assert(!crossOrg.ok);assert.equal(failures,1);});
+
+  const cfg={allowedUnionIds:['owner'],allowedConversationIds:['c'],groupAgentPolicy:'fullTools',almaApiPort:23001};
   const b=new DingTalkBridge({config:()=>cfg,context:{logger,settings:{},storage:{local:{}}}});
   const output=[];
   b.dingtalk.replyWebhook=async(_w,text)=>{output.push(text);return {ok:true};};
@@ -89,7 +111,7 @@ try {
   output.length=0;b.dingtalk.sendImage=async()=>({ok:true});
   await b.finalizeTurn({...failedTurn,text:'落日图片已生成',flushedChars:0,streamed:false,flushInFlight:undefined});
   check('仅成功回执后追加发送结果',()=>assert(output.join('').includes('1 张图片已获钉钉发送成功回执')));
-  cfg.allowedStaffIds=[];let uploads=0;b.dingtalk.sendImage=async()=>{uploads++;return {ok:true};};
+  cfg.allowedUnionIds=[];let uploads=0;b.dingtalk.sendImage=async()=>{uploads++;return {ok:true};};
   const blocked=await b.sendTurnImages(failedTurn);
   check('回合结束时重新鉴权，不绕过白名单',()=>{assert(blocked.failed);assert.equal(uploads,0);});
   b.socket.close();socket.close();

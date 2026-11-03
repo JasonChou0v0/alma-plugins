@@ -85,7 +85,7 @@ function downstream(text, overrides = {}) {
             conversationId: 'cid_e2e_group',
             conversationType: '2',
             conversationTitle: '[TEST] E2E 群',
-            senderStaffId: 'staff_e2e',
+            senderUnionId: 'staff_e2e',
             senderNick: 'Tester',
             msgId: `msg_e2e_${Date.now()}_${seq}`,
             msgtype: 'text',

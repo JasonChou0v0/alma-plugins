@@ -93,13 +93,13 @@ function parseMeta(out) {
 
 console.log('\n[@ 提及]');
 {
-    const noMention = AlmaSocket.composeEphemeralMetadata({ nick: '张三', staffId: 's1' });
+    const noMention = AlmaSocket.composeEphemeralMetadata({ nick: '张三', unionId: 's1' });
     const metaNo = parseMeta(noMention);
     check('无提及时不带 mentions', metaNo?.mentions === undefined, JSON.stringify(metaNo));
 
     const withMention = AlmaSocket.composeEphemeralMetadata({
         nick: '张三',
-        staffId: 's1',
+        unionId: 's1',
         chatTitle: '研发群',
         mentions: [{ name: '李四' }],
     });
@@ -109,13 +109,13 @@ console.log('\n[@ 提及]');
 
     const multi = AlmaSocket.composeEphemeralMetadata({
         nick: '张三',
-        staffId: 's1',
+        unionId: 's1',
         mentions: [{ name: '李四' }, { name: '王五' }],
     });
     const metaMulti = parseMeta(multi);
     check('多人被 @ 全部列出', JSON.stringify(metaMulti?.mentions) === JSON.stringify(['李四', '王五']), JSON.stringify(metaMulti?.mentions));
 
-    const emptyMentions = AlmaSocket.composeEphemeralMetadata({ nick: '张三', staffId: 's1', mentions: [] });
+    const emptyMentions = AlmaSocket.composeEphemeralMetadata({ nick: '张三', unionId: 's1', mentions: [] });
     const metaEmpty = parseMeta(emptyMentions);
     check('空 mentions 不产生 mentions 字段', metaEmpty?.mentions === undefined);
 }
@@ -123,16 +123,16 @@ console.log('\n[@ 提及]');
 /* ---------- 占位 ID 标注为不可信 ---------- */
 console.log('\n[占位 ID：不暴露原始前缀]');
 {
-    /* 有昵称无可信 ID 时，用 nick: 占位；元数据 staffId 置空且标 false，不把 'nick:' 前缀写出去 */
+    /* 有昵称无可信 ID 时，用 nick: 占位；元数据 unionId 置空且标 false，不把 'nick:' 前缀写出去 */
     const nickOnly = AlmaSocket.composeEphemeralMetadata({
         nick: '高喆',
-        staffId: 'nick:高喆',
+        unionId: 'nick:高喆',
         chatTitle: '研发群',
     });
     const meta = parseMeta(nickOnly);
     check('仅昵称也能组装', meta?.sender?.displayName === '高喆', JSON.stringify(meta));
-    check('占位 ID staffId 置空', meta?.sender?.staffId === null);
-    check('占位 ID 标为不可信', meta?.sender?.staffIdTrusted === false);
+    check('占位 ID unionId 置空', meta?.sender?.unionId === null);
+    check('占位 ID 标为不可信', meta?.sender?.unionIdTrusted === false);
     check('占位前缀不出现在元数据', !nickOnly.includes('nick:'), JSON.stringify(nickOnly).slice(0, 120));
 }
 
@@ -140,13 +140,13 @@ console.log('\n[占位 ID：不暴露原始前缀]');
 /* ---------- 引用消息还原（标注为不可信用户内容、非指令） ---------- */
 console.log('\n[引用消息]');
 {
-    const noQuote = AlmaSocket.composeEphemeralMetadata({ nick: '张三', staffId: 's1' });
+    const noQuote = AlmaSocket.composeEphemeralMetadata({ nick: '张三', unionId: 's1' });
     const metaNo = parseMeta(noQuote);
     check('无引用时不带 quoted', metaNo?.quoted === undefined, JSON.stringify(metaNo));
 
     const withQuote = AlmaSocket.composeEphemeralMetadata({
         nick: '李四',
-        staffId: 's2',
+        unionId: 's2',
         chatTitle: '研发群',
         quoted: { nick: '张三', text: '如何在 Alma 里接钉钉？' },
     });
@@ -160,14 +160,14 @@ console.log('\n[引用消息]');
 
     const missQuote = AlmaSocket.composeEphemeralMetadata({
         nick: '李四',
-        staffId: 's2',
+        unionId: 's2',
         quoted: { nick: '', text: '' },
     });
     const metaMiss = parseMeta(missQuote);
     check('缓存未命中时 text 为 null', metaMiss?.quoted?.text === null, JSON.stringify(metaMiss?.quoted));
     check('缓存未命中仍标非指令', metaMiss?.quoted?.isInstruction === false);
 
-    const nullQuote = AlmaSocket.composeEphemeralMetadata({ nick: '王五', staffId: 's3', quoted: null });
+    const nullQuote = AlmaSocket.composeEphemeralMetadata({ nick: '王五', unionId: 's3', quoted: null });
     const metaNull = parseMeta(nullQuote);
     check('quoted=null 不产生 quoted 字段', metaNull?.quoted === undefined);
 }
@@ -212,7 +212,7 @@ console.log('\n[载荷引用优先与缓存兜底]');
         bridge.resolveQuotedMessage({ conversationId: 'group-a', text: { content: '', isReplyMsg: true } })?.text === '');
     check('只@机器人且缺少顶层引用ID时仍生成占位正文',
         bridge.extractText({ ...payload, originalMsgId: undefined }).includes('用户引用了一条消息'));
-    const meta = parseMeta(AlmaSocket.composeEphemeralMetadata({ nick: '提问者', staffId: 'test-user', quoted: quote }));
+    const meta = parseMeta(AlmaSocket.composeEphemeralMetadata({ nick: '提问者', unionId: 'test-user', quoted: quote }));
     check('实际引用正文送入agent元数据并保持不可信标记',
         meta?.quoted?.text === quote.text && meta.quoted.textTrust === false && meta.quoted.isInstruction === false);
 }

@@ -188,9 +188,9 @@ export class DingTalkBridge {
             return;
         }
 
-        if (config.allowedStaffIds.length === 0) {
+        if (config.allowedUnionIds.length === 0) {
             this.ctx.logger.warn(
-                'allowedStaffIds 为空：所有入站消息都会被拒绝（无开放模式）。请在插件设置里配置用户白名单。',
+                'allowedUnionIds 为空：所有入站消息都会被拒绝（无开放模式）。请在插件设置里配置用户白名单。',
             );
         }
 
@@ -587,7 +587,7 @@ export class DingTalkBridge {
         if (!turn.attachments?.length && !turn.attachmentOverflow) return { failed: false, summary: '' };
         const authorized = () => {
             const cfg = this.cfg();
-            return !this.stopping && !turn.stopRequested && cfg.allowedStaffIds.includes(turn.senderId) &&
+            return !this.stopping && !turn.stopRequested && cfg.allowedUnionIds.includes(turn.senderId) &&
                 (turn.conversationType === '1' || (turn.conversationType === '2' &&
                     cfg.allowedConversationIds.includes(turn.chatId) && cfg.groupAgentPolicy === 'fullTools'));
         };
@@ -596,9 +596,12 @@ export class DingTalkBridge {
         for (const attachment of turn.attachments ?? []) {
             try {
                 if (!authorized()) throw new Error('图片发送权限已撤销或回合已停止');
+                if (turn.conversationType === '1' && !turn.senderStaffId) {
+                    throw new Error('图片私聊缺少钉钉投递地址；UnionID 授权不能替代接口所需 userId');
+                }
                 const image = await loadAlmaImage(attachment, this.cfg().almaApiPort);
                 const result = await this.dingtalk.sendImage(
-                    turn.conversationType === '2' ? { conversationId: turn.chatId } : { staffId: turn.senderId },
+                    turn.conversationType === '2' ? { conversationId: turn.chatId } : { staffId: turn.senderStaffId },
                     image, authorized,
                 );
                 if (!result.ok) throw new Error(result.error || '钉钉图片发送未成功确认');
@@ -699,20 +702,12 @@ export class DingTalkBridge {
         }
 
         const chatId = payload?.conversationId;
-        /* 跨企业用户可能没有 senderStaffId，用 senderId 兜底 */
-        const senderId =
-            payload?.senderStaffId ||
-            payload?.senderId ||
-            /* 引用消息场景可能两个都没有，用昵称占位避免整条丢弃 */
-            (payload?.senderNick ? `nick:${payload.senderNick}` : '');
+        // 只使用钉钉事件中的 UnionID；staffId、senderId 和昵称都不能作为鉴权兜底。
+        const senderId = typeof payload.senderUnionId === 'string' ? payload.senderUnionId : '';
         const webhook = payload?.sessionWebhook;
         const msgId = payload?.msgId;
 
-        /*
-         * 引用消息（点引用后再 @ 机器人）时，钉钉推来的载荷里
-         * senderStaffId 可能缺失，但 senderId 通常还在，已在上文兜底。
-         * 这里额外容忍"有 webhook 但没 sender"的情况：用昵称或占位 ID 继续处理。
-         */
+        /* 会话和回复地址为必需字段；用户身份随后只按 senderUnionId 核验。 */
         if (!chatId || !webhook) {
             /*
              * 跨企业用户（如外部公司同事）常常没有 senderStaffId，
@@ -720,7 +715,7 @@ export class DingTalkBridge {
              */
             const missing = [
                 !chatId && 'conversationId',
-                !senderId && 'senderStaffId/senderId',
+                !senderId && 'senderUnionId',
                 !webhook && 'sessionWebhook',
             ].filter(Boolean);
             this.ctx.logger.warn(
@@ -764,25 +759,25 @@ export class DingTalkBridge {
         /*
          * 访问控制（覆盖所有入站，含 /help、/status 等命令——命令一律先鉴权）：
          * - nick: 占位 ID 永不可授权：昵称可伪造，不是可信身份，即便被写进白名单也拒；
-         * - 用户白名单 allowedStaffIds 为空 → 拒绝（不再有"开放模式"）；
+         * - 用户白名单 allowedUnionIds 为空 → 拒绝（不再有"开放模式"）；
          * - 用户不在白名单 → 拒绝；
          * - 群白名单 allowedConversationIds：群聊必须在名单内，空则拒绝所有群；
          *   单聊不受群白名单约束（仍受用户白名单约束）。
          * 这里只做"是否允许进入"；/use、/new 的管理员鉴权在 runCommand 里做。
          */
-        if (senderId.startsWith('nick:')) {
+        if (!senderId || senderId.startsWith('nick:')) {
             this.ctx.logger.info(`拒绝不可信 nick: 占位 ID ${senderId}`);
-            await this.dingtalk.replyWebhook(webhook, '⛔ 无法核实你的身份（缺少可信 staffId），已拒绝。');
+            await this.dingtalk.replyWebhook(webhook, '⛔ 无法核实你的身份（缺少可信 UnionID），已拒绝。');
             return;
         }
 
-        if (config.allowedStaffIds.length === 0) {
-            this.ctx.logger.warn('allowedStaffIds 为空，拒绝所有入站（无开放模式）');
+        if (config.allowedUnionIds.length === 0) {
+            this.ctx.logger.warn('allowedUnionIds 为空，拒绝所有入站（无开放模式）');
             await this.dingtalk.replyWebhook(webhook, '⛔ 未配置用户白名单，机器人未开放使用。');
             return;
         }
 
-        if (!config.allowedStaffIds.includes(senderId)) {
+        if (!config.allowedUnionIds.includes(senderId)) {
             this.ctx.logger.info(`拒绝未授权用户 ${senderId}`);
             await this.dingtalk.replyWebhook(webhook, '⛔ 你没有使用这个机器人的权限。');
             return;
@@ -850,7 +845,7 @@ export class DingTalkBridge {
                     await previous;
                     try {
                         const current = this.cfg();
-                        if (!this.stopping && current.allowedStaffIds.includes(senderId) &&
+                        if (!this.stopping && current.allowedUnionIds.includes(senderId) &&
                             (!isGroup || current.allowedConversationIds.includes(chatId))) {
                             await this.runCommand(cmd, m[2] ?? '', chatId, senderId, webhook);
                         }
@@ -917,7 +912,7 @@ export class DingTalkBridge {
             if (this.stopping) throw new Error('桥接已停止，本条未执行，请稍后重试');
             // 排队期间权限可能变更，执行前再校验一次。
             const live = this.cfg();
-            if (!live.allowedStaffIds.includes(senderId) ||
+            if (!live.allowedUnionIds.includes(senderId) ||
                 (isGroup && (!(live.allowedConversationIds ?? []).includes(chatId) || live.groupAgentPolicy !== 'fullTools'))) {
                 throw new Error('排队期间权限已变更，本条未执行');
             }
@@ -934,6 +929,7 @@ export class DingTalkBridge {
                 chatId,
                 webhook,
                 senderId,
+                senderStaffId: payload.senderStaffId,
                 conversationType: String(payload.conversationType),
                 text: '',
                 tools: [],
@@ -953,7 +949,7 @@ export class DingTalkBridge {
             const completed = new Promise<void>(resolve => { turn.settled = resolve; });
             await this.socket.submit(turn, model, text, {
                 nick: payload.senderNick,
-                staffId: senderId,
+                unionId: senderId,
                 chatTitle: payload.conversationTitle,
                 mentions: this.extractMentionedPeople(payload),
                 quoted,
@@ -1156,12 +1152,12 @@ export class DingTalkBridge {
         const reply = (t: string, title?: string) => this.dingtalk.replyWebhook(webhook, t, title);
 
         /*
-         * 管理员命令鉴权：/use、/new 仅显式 adminStaffIds 可用。
+         * 管理员命令鉴权：/use、/new 仅显式 adminUnionIds 可用。
          * 仍受上游用户白名单与群白名单约束（已在 handleIncoming 入站鉴权里完成）。
-         * adminStaffIds 为空 → 无人可用这两个命令（不把 allowedStaffIds 隐式当管理员）。
+         * adminUnionIds 为空 → 无人可用这两个命令（不把 allowedUnionIds 隐式当管理员）。
          */
         if (cmd === 'use' || cmd === 'new') {
-            if (config.adminStaffIds.length === 0 || !config.adminStaffIds.includes(senderId)) {
+            if (config.adminUnionIds.length === 0 || !config.adminUnionIds.includes(senderId)) {
                 this.ctx.logger.info(`拒绝非管理员 ${senderId} 执行 /${cmd}`);
                 await reply('⛔ 该命令仅限管理员使用。');
                 return;
@@ -1189,8 +1185,8 @@ export class DingTalkBridge {
                             '- `/use <id>` 切换当前会话绑定的工作区',
                             '',
                             '**授权管理（仅管理员）**',
-                            '- `/allow @用户` / `/deny @用户` 授权或撤销用户（需要钉钉返回真实 staffId）',
-                            '- `/allow user <ID>` / `/deny user <ID>` 按真实 ID 操作',
+                            '- `/allow @用户` / `/deny @用户` 授权或撤销用户（需要钉钉返回真实 UnionID）',
+                            '- `/allow union <UnionID>` / `/deny union <UnionID>` 按 UnionID 操作',
                             '- `/allow group` / `/deny group` 授权或撤销当前群',
                             '- `/access` 查看白名单；管理员和工具策略仅在本机修改',
                             '',
@@ -1296,26 +1292,26 @@ export class DingTalkBridge {
      * AI 工具 dingtalk_notify 的鉴权入口。
      *
      * 防绕过：
-     * - 收件人必须在显式用户白名单里，不能向任意 staffId 发信；
+     * - 收件人必须在显式用户白名单里，不能向任意 UnionID 发信；
      * - 调用线程若被「禁用工具」标记约束，拒绝发信（纵深防御，防绕过）；
      * - 文本长度受限，避免被当成无界广播通道。
      */
     async notify(
-        staffId: string,
+        unionId: string,
         text: string,
         options?: { threadId?: string },
     ): Promise<{ ok: boolean; error?: string }> {
         const config = this.cfg();
-        const recipient = String(staffId ?? '').trim();
+        const recipient = String(unionId ?? '').trim();
         const body = String(text ?? '');
 
-        if (!recipient) return { ok: false, error: '缺少 staffId' };
+        if (!recipient) return { ok: false, error: '缺少 UnionID' };
         if (!body) return { ok: false, error: '缺少消息内容' };
         if (body.length > 4000) return { ok: false, error: '消息过长（>4000）' };
 
         /*
          * 只允许白名单里的真实收件人（防 send helper 旁路）：
-         * - nick: 占位 ID 永不可授权（不是可信 staffId，sendToUser 也发不出去）；
+         * - nick: 占位 ID 永不可授权（不是可信 UnionID）；
          * - 白名单为空 → 拒绝（无开放模式）；
          * - 不再用 knownSenders() 兜底——那会把任何发过消息的人（含未授权占位 ID）
          *   放进来，构成主动发信旁路。
@@ -1324,7 +1320,7 @@ export class DingTalkBridge {
             this.ctx.logger.warn(`notify 拒绝不可信 nick: 收件人: ${recipient}`);
             return { ok: false, error: '收件人为不可信 nick: 占位 ID，已拒绝' };
         }
-        if (config.allowedStaffIds.length === 0 || !config.allowedStaffIds.includes(recipient)) {
+        if (config.allowedUnionIds.length === 0 || !config.allowedUnionIds.includes(recipient)) {
             this.ctx.logger.warn(`notify 拒绝向未授权收件人发信: ${recipient}`);
             return { ok: false, error: `收件人 ${recipient} 不在白名单中，已拒绝（防绕过）` };
         }
@@ -1334,7 +1330,9 @@ export class DingTalkBridge {
             return { ok: false, error: '当前会话工具被禁用，不允许主动发信' };
         }
 
-        const result = await this.dingtalk.sendToUser(recipient, body);
+        const result = await this.dingtalk.sendToUnionUser(recipient, body, () =>
+            this.cfg().allowedUnionIds.includes(recipient) &&
+            !(options?.threadId && this.toolsDisabledThreads.has(options.threadId)));
         if (!result.ok) {
             this.ctx.logger.warn('主动推送失败', result.error);
             return { ok: false, error: result.error };

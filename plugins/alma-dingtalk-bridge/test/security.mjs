@@ -40,6 +40,7 @@ globalThis.fetch = async (url, init) => {
             headers: { 'Content-Type': 'application/json' },
         });
     }
+    if (u.includes('/topapi/user/getbyunionid')) return Response.json({ errcode: 0, result: { userid: 'delivery-user' } });
     /* 钉钉发送 / webhook 回复：统一回成功 */
     return new Response('{"errcode":0,"errmsg":"ok"}', { status: 200 });
 };
@@ -54,7 +55,7 @@ function baseConfig(over = {}) {
         defaultModel: '',
         workspaceId: '',
         mode: 'per-chat',
-        allowedStaffIds: ['staff_a', 'staff_b'],
+        allowedUnionIds: ['staff_a', 'staff_b'],
         streamingReply: false,
         replyOnToolUse: false,
         logRawPayload: false,
@@ -74,7 +75,7 @@ try {
         const { context, eventHandlers, registeredTools } = createContext({
             root: ROOT,
             quiet: true,
-            pluginSettings: { clientId: '', clientSecret: '', allowedStaffIds: '' },
+            pluginSettings: { clientId: '', clientSecret: '', allowedUnionIds: '' },
         });
 
         const mod = await import(path.join(ROOT, 'main.ts'));
@@ -114,11 +115,11 @@ try {
 
         const notifyCalls = [];
         const origNotify = bridge.notify.bind(bridge);
-        bridge.notify = (staffId, text, opts) => {
-            notifyCalls.push({ staffId, text, opts });
+        bridge.notify = (unionId, text, opts) => {
+            notifyCalls.push({ unionId, text, opts });
             return Promise.resolve({ ok: true });
         };
-        await notifyDef.execute({ staffId: 'staff_a', message: 'hi' }, { threadId: 'T1', messageId: 'm1' });
+        await notifyDef.execute({ unionId: 'staff_a', message: 'hi' }, { threadId: 'T1', messageId: 'm1' });
         check('工具透传了 threadId', notifyCalls[0]?.opts?.threadId === 'T1', JSON.stringify(notifyCalls[0]));
         bridge.notify = origNotify;
 
@@ -132,7 +133,7 @@ try {
     /* ============================================================ */
     console.log('\n[B] notify 鉴权与白名单防绕过');
     {
-        const { context } = createContext({ root: ROOT, quiet: true, pluginSettings: { allowedStaffIds: 'staff_a,staff_b' } });
+        const { context } = createContext({ root: ROOT, quiet: true, pluginSettings: { allowedUnionIds: 'staff_a,staff_b' } });
         const bridge = new DingTalkBridge({ context, config: baseConfig() });
 
         bridge.secretClientSecret = 'fake-secret';
@@ -149,7 +150,7 @@ try {
         check('禁用线程里发信被拒', r2.ok === false && /禁用/.test(r2.error ?? ''), JSON.stringify(r2));
         check('禁用线程拒绝时不出站', fetchLog.length === 0, `fetch=${fetchLog.length}`);
 
-        /* B3：授权 + 非禁用 → 走真实 sendToUser（fetch 桩返回成功） */
+        /* B3：授权 + 非禁用 → 走真实 sendToUnionUser（fetch 桩返回成功） */
         fetchLog.length = 0;
         const r3 = await bridge.notify('staff_a', 'hi', { threadId: 'thread-ok' });
         check('授权且非禁用时发送成功', r3.ok === true, JSON.stringify(r3));

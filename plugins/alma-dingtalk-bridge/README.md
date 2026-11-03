@@ -8,9 +8,9 @@
 
 1. 配置 `clientId`（AppKey）和可选的 `robotCode`。
 2. 在 Alma 命令面板执行「钉钉桥接：设置安全密钥」，在密码框输入 AppSecret。
-3. 配置 `allowedStaffIds`：可信用户 ID，逗号分隔。`nick:` 占位身份永不授权。外部用户必须有事件提供的实际 ID 并显式列入名单。
+3. 配置 `allowedUnionIds`：钉钉事件中的可信 UnionID，逗号分隔。`nick:` 占位身份永不授权。内部和外部用户都必须有事件提供的 `senderUnionId` 并显式列入名单。
 4. 群聊额外配置 `allowedConversationIds`：群的完整 conversationId。空名单拒绝所有群；私聊仍受用户白名单约束。
-5. `adminStaffIds` 指定可以使用 `/use`、`/new`、`/allow`、`/deny`、`/access` 的管理员。管理员的普通消息和命令同时受上述两层白名单约束；唯一的首次开群例外是已在用户白名单中的管理员发送 `/allow group`。不会隐式把全部允许用户当管理员。
+5. `adminUnionIds` 指定可以使用 `/use`、`/new`、`/allow`、`/deny`、`/access` 的管理员。管理员的普通消息和命令同时受上述两层白名单约束；唯一的首次开群例外是已在用户白名单中的管理员发送 `/allow group`。不会隐式把全部允许用户当管理员。
 
 AppSecret 只从 `context.storage.secrets` 读取。系统 `safeStorage` 加密不可用时拒绝启动，因为当前宿主的 secrets 后端会在此情况下回退到明文。旧普通设置的 `clientSecret` 仅用于一次性迁移：写入安全存储并回读相等后，清空旧普通设置；任一步失败均不启用明文凭据。清空当前设置不等于擦除旧备份或数据库历史。
 
@@ -24,15 +24,23 @@ manifest 的 `settings:write` 用于清空旧凭据以及管理员授权命令�
 
 显式设置 `fullTools` 才允许已通过用户和群白名单的成员驱动完整 agent。授权私聊可驱动完整 agent。`single` 模式会让所有授权会话共享上下文；默认 `per-chat`，避免不必要的跨群共享。
 
-发言人 ID 来自钉钉事件，不从正文解析授权。显示名、群名、@ 文本和引用内容均为不可信展示数据，用 JSON 编码且标明来源。正文同格式的伪造身份块会被剥离。此清洗是辅助措施，不能消除所有提示注入；实际访问控制由代码执行。
+发言人身份只取钉钉事件的 `senderUnionId`，不从正文解析授权。显示名、群名、@ 文本和引用内容均为不可信展示数据，用 JSON 编码且标明来源。正文同格式的伪造身份块会被剥离。此清洗是辅助措施，不能消除所有提示注入；实际访问控制由代码执行。
 
-`dingtalk_notify` 收件人必须在用户白名单内；不再接受「已发过消息的人」兜底。
+`dingtalk_notify` 只接收 `unionId`，先按 `allowedUnionIds` 鉴权，再用官方接口解析企业内 userId 作为投递地址；解析后再次验权。staffId/userId 不参与授权。跨组织 UnionID 可能无法解析企业内投递地址，此时主动私聊明确失败；原群内互动不需要这个转换。
 
 ## 安装与升级
 
 将 `manifest.json`、`main.js` 放入 `~/.config/alma/plugins/alma-dingtalk-bridge/`，在 Alma 插件页刷新。`main.js` 已包含 npm 运行依赖；Electron 由宿主提供。授权清空旧设置所需的 `settings:write` 后检查状态栏。插件升级前须核对白名单，不能沿用旧版「空名单开放」预期。
 
 预打包文件必须和源码一起更新；不要复制 `dashboard/data.json`、运行日志或凭据。
+
+## UnionID 迁移（2.0.0）
+
+用户和管理员鉴权均只认 UnionID；不再读取 `allowedStaffIds` / `adminStaffIds`，不回退到 `senderStaffId`、`senderId` 或昵称。旧名单不能直接改名复制：必须从同一机器人/开发者范围的真实事件核实每人的 `senderUnionId`，再写入 `allowedUnionIds` / `adminUnionIds`。无法核实时保持拒绝，不静默放行。
+
+`/allow user <ID>` 与 `/deny user <ID>` 保留为 UnionID 命令别名，参数不再解释为 staffId；建议使用明确的 `union` 写法。群白名单仍使用 conversationId。`per-chat` 会话保持不变；旧 `per-sender` 的 staffId 会话键不会自动复用，新消息按 UnionID 建立隔离会话。
+
+钉钉发送接口需要 userId 的场景仍保留投递地址：私聊图片使用原事件中的 senderStaffId，主动通知通过 UnionID 查询 userId；这些地址不能授予权限，也不能反向冒充 UnionID。聊天正文或群昵称不用于转换身份。
 
 ## 配置
 
@@ -44,9 +52,9 @@ manifest 的 `settings:write` 用于清空旧凭据以及管理员授权命令�
 | `clientSecretSecretKey` | `dingtalk.clientSecret` | 安全存储键名，不是密钥值 |
 | `robotCode` | 空 | 留空沿用 clientId |
 | `robotName` | `豆豆` | 排除机器人自己的 @ 名称 |
-| `allowedStaffIds` | 空 | 空则拒绝所有入站与主动发信 |
+| `allowedUnionIds` | 空 | 空则拒绝所有入站与主动发信 |
 | `allowedConversationIds` | 空 | 空则拒绝所有群 |
-| `adminStaffIds` | 空 | 空则无人可执行会话管理和授权管理命令 |
+| `adminUnionIds` | 空 | 空则无人可执行会话管理和授权管理命令 |
 | `groupAgentPolicy` | `refuse` | `refuse` / `fullTools` |
 | `mode` | `per-chat` | 每会话；另支持 `per-sender`、`single` |
 | `almaApiPort` | `23001` | 本地内部 API 端口 |
@@ -75,7 +83,7 @@ WebSocket 的 `text_append` 同时承载正文和推理块。插件只接纳明�
 
 ## 群内授权管理
 
-首次管理员必须在本机同时列入 `allowedStaffIds` 和 `adminStaffIds`，并授予插件 `settings:write`。没有任何「第一位发消息者自动成为管理员」的机制。
+首次管理员必须在本机同时列入 `allowedUnionIds` 和 `adminUnionIds`，并授予插件 `settings:write`。没有任何「第一位发消息者自动成为管理员」的机制。
 
 在目标群中发送：
 
@@ -83,15 +91,15 @@ WebSocket 的 `text_append` 同时承载正文和推理块。插件只接纳明�
 @豆豆 /allow group                 授权当前群，可在尚未开放的群执行
 @豆豆 /allow @张三                 授权被提及的用户，可同时提及多人
 @豆豆 /deny @张三                  撤销用户授权
-@豆豆 /allow user <真实用户ID>       明确按 ID 授权
-@豆豆 /deny user <真实用户ID>        明确按 ID 撤销
+@豆豆 /allow union <UnionID>        明确按 UnionID 授权
+@豆豆 /deny union <UnionID>         明确按 UnionID 撤销
 @豆豆 /deny group                  撤销当前群
 @豆豆 /access                      查看白名单
 ```
 
 「授权群」指当前 conversationId，不通过群名或 @ 文本猜群。`/allow 群`、`/allow 当前群` 与 `/allow group` 等价。
 
-用户 @ 授权只接受钉钉结构化 `atUsers[].staffId`，排除机器人自己。若只有昵称、dingtalkId 或缺少某个目标的 staffId，整次拒绝修改并提示使用明确 ID；不推断这几个 ID 必然可互换。允许用户后会加入全局用户白名单，群仍须单独授权。
+用户 @ 授权只接受钉钉结构化 `atUsers[].unionId`，排除机器人自己。若只有昵称、dingtalkId、staffId 或缺少某个目标的 unionId，整次拒绝修改并提示使用明确 UnionID；不推断这几个 ID 必然可互换。允许用户后会加入全局用户白名单，群仍须单独授权。
 
 所有授权管理命令仅管理员可用；只有 `/allow group` 可作为未开放群的入口，其他授权命令必须在已授权群或管理员私聊执行。命令直接由插件处理，不调用 agent。新增管理员、撤销管理员本人的使用权限和开启 `fullTools` 必须在本机配置，不能通过这些聊天命令操作。授权群不会开启群 agent 工具。
 

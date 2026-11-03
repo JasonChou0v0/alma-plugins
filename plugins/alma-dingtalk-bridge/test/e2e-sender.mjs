@@ -67,7 +67,7 @@ function msg(text, nick, staffId) {
             conversationId: 'cid_group_multi',
             conversationType: '2',
             conversationTitle: '[TEST] 研发讨论群',
-            senderStaffId: staffId,
+            senderUnionId: staffId,
             senderNick: nick,
             msgId: `msg_${Date.now()}_${seq}`,
             msgtype: 'text',

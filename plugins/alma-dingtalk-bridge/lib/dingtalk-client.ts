@@ -367,7 +367,28 @@ export class DingTalkClient {
         }
     }
 
-    /** 主动发单聊消息（需要 clientId/clientSecret） */
+    /** UnionID is the authorization identity; userId is resolved only as a delivery address. */
+    async sendToUnionUser(unionId: string, text: string, authorized: () => boolean): Promise<SendResult> {
+        if (!authorized()) return { ok: false, error: 'UnionID 未授权' };
+        const token = await this.getAccessToken();
+        if (!token) return { ok: false, error: '未配置凭据或 token 获取失败' };
+        try {
+            const res = await fetch(`https://oapi.dingtalk.com/topapi/user/getbyunionid?access_token=${encodeURIComponent(token)}`, {
+                method: 'POST', redirect: 'error', signal: AbortSignal.timeout(20_000),
+                headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ unionid: unionId }),
+            });
+            const data: any = await res.json().catch(() => null);
+            if (!res.ok || data?.errcode !== 0 || typeof data?.result?.userid !== 'string' || !data.result.userid) {
+                return { ok: false, error: '无法为该 UnionID 解析企业内投递地址；跨组织用户请在原会话互动，或检查成员信息读权限' };
+            }
+            if (!authorized()) return { ok: false, error: '投递前 UnionID 授权已撤销' };
+            return await this.sendToUser(data.result.userid, text);
+        } catch {
+            return { ok: false, error: 'UnionID 投递地址解析或消息发送失败' };
+        }
+    }
+
+    /** 主动发单聊消息（仅接收已完成 UnionID 鉴权后的投递地址） */
     async sendToUser(staffId: string, text: string): Promise<SendResult> {
         const { robotCode } = this.credentials();
         const token = await this.getAccessToken();

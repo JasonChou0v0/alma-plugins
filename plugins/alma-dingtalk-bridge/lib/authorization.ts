@@ -30,8 +30,8 @@ export class AuthorizationCommands {
         await prior;
         try {
             const config = this.config();
-            if (!actorId || actorId.startsWith('nick:') ||
-                !config.allowedStaffIds.includes(actorId) || !config.adminStaffIds.includes(actorId)) {
+            if (!actorId || actorId !== payload.senderUnionId || actorId.startsWith('nick:') ||
+                !config.allowedUnionIds.includes(actorId) || !config.adminUnionIds.includes(actorId)) {
                 return '⛔ 授权管理仅限已加入用户白名单的管理员。';
             }
             const group = String(payload.conversationType) === '2';
@@ -43,7 +43,7 @@ export class AuthorizationCommands {
                 if (args.trim()) return '用法：/access';
                 return [
                     '🔐 当前授权配置',
-                    `用户：${config.allowedStaffIds.join(', ') || '无'}`,
+                    `用户 UnionID：${config.allowedUnionIds.join(', ') || '无'}`,
                     `群：${config.allowedConversationIds.join(', ') || '无'}`,
                     `当前群：${group ? payload.conversationId : '非群聊'}`,
                     `群 agent：${config.groupAgentPolicy === 'fullTools' ? '已显式开放完整工具' : '默认拒绝生成'}`,
@@ -56,27 +56,27 @@ export class AuthorizationCommands {
             if (targetGroup) {
                 if (!group || !payload.conversationId) return '⛔ 请在目标群内发送此命令，不能用私聊或群昵称指定群。';
                 ids = [payload.conversationId];
-            } else if (/^user\s+\S+$/i.test(arg)) {
-                ids = [arg.replace(/^user\s+/i, '')];
+            } else if (/^(?:union|user)\s+\S+$/i.test(arg)) {
+                ids = [arg.replace(/^(?:union|user)\s+/i, '')];
             } else if (!arg) {
-                // Never infer identity from visible @names or use dingtalkId as a staffId.
+                // Never infer identity from visible @names or use dingtalkId as a UnionID.
                 const mentions = (payload.atUsers ?? []).filter(u => !(
                     payload.chatbotUserId && u.dingtalkId === payload.chatbotUserId
                 ));
-                if (!mentions.length || mentions.some(u => !u.staffId)) {
-                    return `⛔ 钉钉未提供被 @ 用户的真实 staffId，未修改授权。请用 /${command} user <真实用户ID>；不会按昵称猜人。`;
+                if (!mentions.length || mentions.some(u => !u.unionId)) {
+                    return `⛔ 钉钉未提供被 @ 用户的真实 UnionID，未修改授权。请用 /${command} union <UnionID>；不会按昵称猜人。`;
                 }
-                ids = [...new Set(mentions.map(u => u.staffId!))];
+                ids = [...new Set(mentions.map(u => u.unionId!))];
             } else {
-                return `用法：/${command} @用户、/${command} user <真实用户ID>、/${command} group（当前群）`;
+                return `用法：/${command} @用户、/${command} union <UnionID>、/${command} group（当前群）`;
             }
             if (ids.some(id => !id || id.startsWith('nick:') || !/^[A-Za-z0-9_$:+/=.-]{1,256}$/.test(id))) {
                 return '⛔ 目标 ID 无效，未修改授权。';
             }
-            if (!targetGroup && command === 'deny' && ids.some(id => config.adminStaffIds.includes(id))) {
+            if (!targetGroup && command === 'deny' && ids.some(id => config.adminUnionIds.includes(id))) {
                 return '⛔ 管理员的访问权限请在本机调整，避免群命令误锁定管理员。';
             }
-            const setting = targetGroup ? 'allowedConversationIds' : 'allowedStaffIds';
+            const setting = targetGroup ? 'allowedConversationIds' : 'allowedUnionIds';
             const values = new Set(config[setting]);
             for (const id of ids) command === 'allow' ? values.add(id) : values.delete(id);
             const value = [...values].join(',');

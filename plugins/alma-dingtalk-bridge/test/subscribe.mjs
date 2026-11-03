@@ -20,7 +20,7 @@ const client = new DWClient({ clientId: 'x', clientSecret: 'y' });
 const robotMsg = {
     type: 'CALLBACK',
     headers: { topic: TOPIC_ROBOT, messageId: 'msg-1' },
-    data: JSON.stringify({ conversationId: 'cid', senderStaffId: 's1', sessionWebhook: 'http://x' }),
+    data: JSON.stringify({ conversationId: 'cid', senderUnionId: 's1', sessionWebhook: 'http://x' }),
 };
 
 /* --- 场景 1：registerAllEventListener（错误用法） --- */

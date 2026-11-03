@@ -12,18 +12,18 @@ export interface BridgeConfig {
     defaultModel: string;
     workspaceId: string;
     mode: SessionMode;
-    allowedStaffIds: string[];
+    allowedUnionIds: string[];
     /**
      * 群白名单：仅这些 conversationId 的群聊（conversationType=2）被允许。
-     * 空则拒绝所有群聊。单聊（conversationType=1）不受此约束，仍由 allowedStaffIds 约束。
+     * 空则拒绝所有群聊。单聊（conversationType=1）不受此约束，仍由 allowedUnionIds 约束。
      */
     allowedConversationIds: string[];
     /**
-     * 管理员 staffId：仅这些显式 staffId 能执行 /use、/new。
-     * 空则无人可用这两个命令；不把 allowedStaffIds 隐式当作管理员。
-     * 仍受 allowedStaffIds 与 allowedConversationIds 约束（入站鉴权里已完成）。
+     * 管理员 UnionID：仅这些显式 UnionID 能执行管理命令。
+     * 空则无人可用这两个命令；不把 allowedUnionIds 隐式当作管理员。
+     * 仍受 allowedUnionIds 与 allowedConversationIds 约束（入站鉴权里已完成）。
      */
-    adminStaffIds: string[];
+    adminUnionIds: string[];
     streamingReply: boolean;
     replyOnToolUse: boolean;
     /** 记录完整原始载荷，用于排查字段名 */
@@ -75,6 +75,8 @@ export interface TurnState {
     chatId: string;
     webhook: string;
     senderId: string;
+    /** 原事件中的投递地址，绝不用于鉴权。 */
+    senderStaffId?: string;
     /** 累积的文本 */
     text: string;
     /** 本回合调用过的工具名 */
@@ -132,7 +134,9 @@ export interface DingTalkRobotMessage {
     conversationId: string;
     conversationType: string;
     conversationTitle?: string;
-    senderStaffId: string;
+    senderStaffId?: string;
+    senderUnionId?: string;
+    senderId?: string;
     senderNick?: string;
     msgId: string;
     msgtype: string;
@@ -149,8 +153,8 @@ export interface DingTalkRobotMessage {
     };
     content?: { richText?: string; downloadCode?: string; isReplyMsg?: boolean };
     /** 被 @ 的人列表 */
-    atUsers?: Array<{ dingtalkId?: string; staffId?: string; name?: string }>;
-    /** 引用的消息（消息本身被 @ 机器人时，这里可能缺 senderStaffId） */
+    atUsers?: Array<{ dingtalkId?: string; unionId?: string; name?: string }>;
+    /** 被引用消息 ID（正文优先读取 text.repliedMsg） */
     originalMsgId?: string;
     /** 机器人自身 openId，用于判断是否被 @ */
     chatbotUserId?: string;
