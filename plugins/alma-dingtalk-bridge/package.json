@@ -1,6 +1,6 @@
 {
     "name": "alma-dingtalk-bridge",
-    "version": "2.3.0",
+    "version": "2.3.1",
     "type": "module",
     "description": "DingTalk channel bridge for Alma — Stream mode intake, full agent turn via Alma's internal WebSocket protocol",
     "author": {

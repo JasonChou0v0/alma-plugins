@@ -88,6 +88,8 @@ export class DingTalkBridge {
 
     /* 去重缓冲：钉钉会在 60s 内重推未 ACK 的消息 */
     private readonly seenMsgIds = new Map<string, number>();
+    /** 私聊身份查询串行化，避免慢查询让后到消息抢先进入会话队列。 */
+    private readonly identityQueues = new Map<string, Promise<void>>();
     /** 正在排队等待处理的线程，防止同一线程堆积 */
 
     /** 同一 session key 正在 resolveThread 的进行中 Promise，防止并发建线程 */
@@ -722,8 +724,8 @@ export class DingTalkBridge {
         }
 
         const chatId = payload?.conversationId;
-        // 只使用钉钉事件中的 UnionID；staffId、senderId 和昵称都不能作为鉴权兜底。
-        const senderId = typeof payload.senderUnionId === 'string' ? payload.senderUnionId : '';
+        // 优先使用事件 UnionID；私聊缺失时只允许由同企业官方查询补全。
+        let senderId = typeof payload.senderUnionId === 'string' ? payload.senderUnionId : '';
         const webhook = payload?.sessionWebhook;
         const msgId = payload?.msgId;
         if (webhook) {
@@ -777,12 +779,36 @@ export class DingTalkBridge {
             this.seenMsgIds.set(msgId, now);
         }
 
-        const config = this.cfg();
         if (!['1', '2'].includes(String(payload.conversationType))) {
             this.ctx.logger.warn('未知会话类型，拒绝执行');
             return;
         }
         const isGroup = String(payload.conversationType) === '2';
+        if (!isGroup) {
+            const previousIdentity = this.identityQueues.get(chatId) ?? Promise.resolve();
+            let releaseIdentity!: () => void;
+            const identityGate = new Promise<void>(resolve => { releaseIdentity = resolve; });
+            this.identityQueues.set(chatId, identityGate);
+            await previousIdentity;
+            try {
+                if (this.stopping) return;
+                if (!senderId) {
+                    const resolved = await this.dingtalk.resolvePrivateUnionId(payload);
+                    if (this.stopping) return;
+                    if (resolved) {
+                        senderId = resolved;
+                        // 副本供后续命令、队列和可信元数据共同使用；原始回调保持不变。
+                        payload = { ...payload, senderUnionId: resolved };
+                        this.ctx.logger.info('私聊身份已通过同企业官方接口补全 UnionID');
+                    }
+                }
+            } finally {
+                releaseIdentity();
+                if (this.identityQueues.get(chatId) === identityGate) this.identityQueues.delete(chatId);
+            }
+        }
+        // 身份查询期间配置可能变化，必须使用最新名单鉴权。
+        const config = this.cfg();
 
         /*
          * 访问控制（覆盖所有入站，含 /help、/status 等命令——命令一律先鉴权）：
@@ -795,7 +821,8 @@ export class DingTalkBridge {
          */
         if (!senderId || senderId.startsWith('nick:')) {
             this.ctx.logger.info(`拒绝不可信 nick: 占位 ID ${senderId}`);
-            await this.dingtalk.replyWebhook(webhook, '⛔ 无法核实你的身份（缺少可信 UnionID），已拒绝。');
+            await this.dingtalk.replyWebhook(webhook, '⛔ 无法核实你的身份（缺少可信 UnionID），已拒绝。' +
+                (!isGroup ? '\n私聊身份未能补全，请管理员检查事件企业信息、应用成员信息读权限及通讯录可见范围。' : ''));
             return;
         }
 

@@ -7,7 +7,7 @@
  */
 import { dataPaths } from './paths.mjs';
 import { appendPrivate, DEFAULT_RETENTION_DAYS } from './archive';
-import type { SendResult } from './types';
+import type { SendResult, DingTalkRobotMessage } from './types';
 import type { OutboundImage } from './media';
 
 export interface DingTalkLogger {
@@ -425,6 +425,50 @@ export class DingTalkClient {
             // Never echo fetch errors: upload URLs carry access tokens. Do not retry an uncertain send.
             return { ok: false, error: '图片上传或发送异常，未自动重试，请核对钉钉是否收到' };
         }
+    }
+
+    /**
+     * 私聊回调可能不带 UnionID。仅对同企业的事件身份查询官方映射；
+     * staffId 只作为查询参数，返回值仍须经过 UnionID 白名单/管理员检查。
+     * 不查跨企业身份，不使用昵称、正文、senderId 或本地历史映射推断。
+     */
+    async resolvePrivateUnionId(payload: Pick<DingTalkRobotMessage,
+        'conversationType' | 'senderStaffId' | 'senderCorpId' | 'chatbotCorpId' | 'robotCode'>): Promise<string | null> {
+        const staffId = payload.senderStaffId;
+        const corpId = payload.senderCorpId;
+        if (String(payload.conversationType) !== '1' || typeof staffId !== 'string' || !staffId.trim() ||
+            typeof corpId !== 'string' || !corpId.trim() || corpId !== payload.chatbotCorpId) return null;
+        const credentials = this.credentials();
+        if (payload.robotCode && payload.robotCode !== credentials.robotCode) return null;
+        const sameCredentials = () => {
+            const current = this.credentials();
+            return current.clientId === credentials.clientId && current.clientSecret === credentials.clientSecret &&
+                current.robotCode === credentials.robotCode;
+        };
+        const unionId = await this.withToken<string | null>(async (token) => {
+            if (!sameCredentials()) return { value: null, rejected: false };
+            try {
+                const response = await fetch(`https://oapi.dingtalk.com/topapi/v2/user/get?access_token=${encodeURIComponent(token)}`, {
+                    method: 'POST', redirect: 'error', signal: AbortSignal.timeout(20_000),
+                    headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ userid: staffId }),
+                });
+                const data: any = await response.json().catch(() => null);
+                if (DingTalkClient.isTokenRejected(response.status, data)) return { value: null, rejected: true };
+                const result = data?.result;
+                if (!response.ok || data?.errcode !== 0 || result?.userid !== staffId ||
+                    typeof result?.unionid !== 'string' || !/^[A-Za-z0-9_$:+/=.-]{1,256}$/.test(result.unionid) ||
+                    result.unionid.startsWith('nick:')) {
+                    this.logger.warn('私聊 UnionID 查询未成功确认，请检查成员信息读权限和通讯录可见范围');
+                    return { value: null, rejected: false };
+                }
+                return { value: result.unionid, rejected: false };
+            } catch {
+                // 请求 URL 带 token，禁止将原始异常或用户详情写入日志。
+                this.logger.warn('私聊 UnionID 查询异常，未使用其他身份放行');
+                return { value: null, rejected: false };
+            }
+        }, null);
+        return sameCredentials() ? unionId : null;
     }
 
     /** UnionID is the authorization identity; userId is resolved only as a delivery address. */

@@ -21947,6 +21947,45 @@ ${fence}` : ""), consumed });
       return { ok: false, error: "图片上传或发送异常，未自动重试，请核对钉钉是否收到" };
     }
   }
+  async resolvePrivateUnionId(payload) {
+    const staffId = payload.senderStaffId;
+    const corpId = payload.senderCorpId;
+    if (String(payload.conversationType) !== "1" || typeof staffId !== "string" || !staffId.trim() || typeof corpId !== "string" || !corpId.trim() || corpId !== payload.chatbotCorpId)
+      return null;
+    const credentials = this.credentials();
+    if (payload.robotCode && payload.robotCode !== credentials.robotCode)
+      return null;
+    const sameCredentials = () => {
+      const current = this.credentials();
+      return current.clientId === credentials.clientId && current.clientSecret === credentials.clientSecret && current.robotCode === credentials.robotCode;
+    };
+    const unionId = await this.withToken(async (token) => {
+      if (!sameCredentials())
+        return { value: null, rejected: false };
+      try {
+        const response = await fetch(`https://oapi.dingtalk.com/topapi/v2/user/get?access_token=${encodeURIComponent(token)}`, {
+          method: "POST",
+          redirect: "error",
+          signal: AbortSignal.timeout(20000),
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ userid: staffId })
+        });
+        const data = await response.json().catch(() => null);
+        if (DingTalkClient.isTokenRejected(response.status, data))
+          return { value: null, rejected: true };
+        const result = data?.result;
+        if (!response.ok || data?.errcode !== 0 || result?.userid !== staffId || typeof result?.unionid !== "string" || !/^[A-Za-z0-9_$:+/=.-]{1,256}$/.test(result.unionid) || result.unionid.startsWith("nick:")) {
+          this.logger.warn("私聊 UnionID 查询未成功确认，请检查成员信息读权限和通讯录可见范围");
+          return { value: null, rejected: false };
+        }
+        return { value: result.unionid, rejected: false };
+      } catch {
+        this.logger.warn("私聊 UnionID 查询异常，未使用其他身份放行");
+        return { value: null, rejected: false };
+      }
+    }, null);
+    return sameCredentials() ? unionId : null;
+  }
   async sendToUnionUser(unionId, text, authorized) {
     if (!authorized())
       return { ok: false, error: "UnionID 未授权" };
@@ -22079,6 +22118,7 @@ class DingTalkBridge {
   dingtalk;
   socket;
   seenMsgIds = new Map;
+  identityQueues = new Map;
   resolving = new Map;
   toolsDisabledThreads = new Set;
   secretClientSecret;
@@ -22590,7 +22630,7 @@ class DingTalkBridge {
       this.archivePayload(payload, downstream);
     }
     const chatId = payload?.conversationId;
-    const senderId = typeof payload.senderUnionId === "string" ? payload.senderUnionId : "";
+    let senderId = typeof payload.senderUnionId === "string" ? payload.senderUnionId : "";
     const webhook = payload?.sessionWebhook;
     const msgId = payload?.msgId;
     if (webhook) {
@@ -22632,15 +22672,43 @@ class DingTalkBridge {
       }
       this.seenMsgIds.set(msgId, now);
     }
-    const config = this.cfg();
     if (!["1", "2"].includes(String(payload.conversationType))) {
       this.ctx.logger.warn("未知会话类型，拒绝执行");
       return;
     }
     const isGroup = String(payload.conversationType) === "2";
+    if (!isGroup) {
+      const previousIdentity = this.identityQueues.get(chatId) ?? Promise.resolve();
+      let releaseIdentity;
+      const identityGate = new Promise((resolve2) => {
+        releaseIdentity = resolve2;
+      });
+      this.identityQueues.set(chatId, identityGate);
+      await previousIdentity;
+      try {
+        if (this.stopping)
+          return;
+        if (!senderId) {
+          const resolved = await this.dingtalk.resolvePrivateUnionId(payload);
+          if (this.stopping)
+            return;
+          if (resolved) {
+            senderId = resolved;
+            payload = { ...payload, senderUnionId: resolved };
+            this.ctx.logger.info("私聊身份已通过同企业官方接口补全 UnionID");
+          }
+        }
+      } finally {
+        releaseIdentity();
+        if (this.identityQueues.get(chatId) === identityGate)
+          this.identityQueues.delete(chatId);
+      }
+    }
+    const config = this.cfg();
     if (!senderId || senderId.startsWith("nick:")) {
       this.ctx.logger.info(`拒绝不可信 nick: 占位 ID ${senderId}`);
-      await this.dingtalk.replyWebhook(webhook, "⛔ 无法核实你的身份（缺少可信 UnionID），已拒绝。");
+      await this.dingtalk.replyWebhook(webhook, "⛔ 无法核实你的身份（缺少可信 UnionID），已拒绝。" + (!isGroup ? `
+私聊身份未能补全，请管理员检查事件企业信息、应用成员信息读权限及通讯录可见范围。` : ""));
       return;
     }
     if (config.allowedUnionIds.length === 0) {
