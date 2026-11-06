@@ -23,18 +23,19 @@ function setup() {
     } };
     const bridge = new DingTalkBridge({ context, config: () => config });
     bridge.secretClientSecret = 'fixture-secret';
-    const replies = [], turns = [];
+    const replies = [], turns = [], executions = [], textCalls = [];
     bridge.dingtalk.replyWebhook = async (_w, text) => { replies.push(text); return { ok: true }; };
     bridge.resolveThread = async () => 'fixture-thread';
     bridge.api.resolveModel = async () => 'fixture-model';
-    bridge.socket.submit = async (turn, model, text, sender) => { turns.push({ turn, sender }); turn.settled(); };
+    bridge.socket.submit = async (turn, model, text, sender) => { turns.push({ turn, sender }); executions.push(turn.senderId); turn.settled(); };
+    bridge.api.completeText = async (_model, messages) => { textCalls.push(messages); executions.push(JSON.parse(messages.at(-1).content).unionId); return 'fixture reply'; };
     const send = async (text, overrides = {}) => {
         const payload = { ...event, msgId: `private-test-${++seq}`, conversationId: 'private-1', msgtype: 'text',
             senderNick: 'untrusted-name', sessionWebhook: 'https://example.invalid/fixture', text: { content: text }, ...overrides };
         await bridge.handleIncoming({ data: payload });
         return { reply: replies.at(-1), payload };
     };
-    return { bridge, config, replies, turns, send };
+    return { bridge, config, replies, turns, textCalls, executions, send };
 }
 
 globalThis.fetch = async (url, options) => {
@@ -102,7 +103,7 @@ try {
         assert.equal(normal.turns[0].sender.unionId, 'admin-union');
     });
     reset(); const direct = setup(); await direct.send('hi', { senderUnionId: 'member-union' });
-    check('已有UnionID的事件不额外查询', () => { assert.equal(calls.length, 0); assert.equal(direct.turns[0].turn.senderId, 'member-union'); });
+    check('已有UnionID的事件不额外查询', () => { assert.equal(calls.length, 0); assert.equal(direct.turns.length, 0); assert.equal(JSON.parse(direct.textCalls[0].at(-1).content).unionId, 'member-union'); });
     reset(); const badDirect = setup(); await badDirect.send('hi', { senderUnionId: 'unknown-union' });
     check('不能用staffId补全覆盖已提供但未授权的UnionID', () => { assert.equal(calls.length, 0); assert.equal(badDirect.turns.length, 0); });
     reset(); const revoke = setup(); handler = () => { revoke.config.allowedUnionIds = []; return Response.json(ok()); };
@@ -123,7 +124,7 @@ try {
     check('慢身份查询期间后到私聊不能抢先进入Agent', () => assert.equal(ordered.turns.length, 0));
     finishLookup(); await Promise.all([first, second]);
     check('身份补全不打乱私聊顺序并释放队列', () => {
-        assert.deepEqual(ordered.turns.map(t => t.turn.senderId), ['admin-union', 'member-union']);
+        assert.deepEqual(ordered.executions, ['admin-union', 'member-union']);
         assert.equal(ordered.bridge.identityQueues.size, 0);
     });
 } finally { globalThis.fetch = originalFetch; }

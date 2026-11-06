@@ -45,7 +45,7 @@ globalThis.fetch = async (url, init) => {
     if (u.endsWith('/api/settings'))
         return json({ chat: { defaultModel: 'fake:fake' }, general: { defaultWorkspaceId: 'ws-fake' } });
     if (u.includes('/robot/oToMessages/batchSend') || u.includes('/robot/groupMessages/send'))
-        return json({ errcode: 0 });
+        return json({ processQueryKey: 'fixture-receipt' });
     return json({ errcode: 0, errmsg: 'ok' });
 };
 

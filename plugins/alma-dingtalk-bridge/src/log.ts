@@ -35,7 +35,7 @@ function format(value: unknown): string {
     }
 }
 
-export function createLogger(host: HostLogger, storagePath?: string): Logger {
+export function createLogger(host: HostLogger, storagePath?: string, retentionDays?: () => number): Logger {
     const dir = dataPaths(storagePath).logs;
     let ready = false;
     let currentFile = '';
@@ -67,7 +67,7 @@ export function createLogger(host: HostLogger, storagePath?: string): Logger {
                 fs.renameSync(file, `${file}.1`);
                 fs.chmodSync(`${file}.1`, 0o600);
             }
-            pruneOld(dir, 7);
+            pruneOld(dir, retentionDays?.());
             currentFile = file;
             const line = `${new Date().toISOString()} [${level}] ${args.map(format).join(' ')}\n`;
             fs.appendFileSync(file, line, { mode: 0o600 });

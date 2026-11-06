@@ -66,6 +66,28 @@ export class AlmaApi {
         return this.req(`/api/threads/${threadId}`, { method: 'DELETE' });
     }
 
+    /** 独立纯文本请求：不传线程、工作区、文件、记忆或工具，拒绝本地代理/插件供应商。 */
+    async completeText(model: string, messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }>, signal: AbortSignal): Promise<string> {
+        const providerId = model.slice(0, model.indexOf(':'));
+        const providers = await this.req<any[] | { providers?: any[] }>('/api/providers', { signal });
+        const provider = (Array.isArray(providers) ? providers : providers.providers ?? []).find(p => p.id === providerId);
+        // 当前宿主可能给 Gemini 模型自动加入工具；不进入这一分支。
+        if (!provider || provider.enabled === false || !['openai', 'anthropic', 'custom'].includes(provider.type) || /gemini/i.test(model)) {
+            throw new Error('纯聊天需要 OpenAI、Anthropic 或自定义文本 API 模型，不支持本地代理或自动工具模型');
+        }
+        const response: any = await this.req('/api/chat/completions', {
+            method: 'POST', signal,
+            body: JSON.stringify({ model, messages: messages.map((message, i) => ({
+                id: `text-${i}`, role: message.role, parts: [{ type: 'text', text: message.content }],
+            })), stream: false, tools: [] }),
+        });
+        const message = response?.choices?.[0]?.message;
+        if (message?.tool_calls?.length || typeof message?.content !== 'string' || !message.content.trim()) {
+            throw new Error('纯聊天未返回有效文本');
+        }
+        return message.content;
+    }
+
     /** 解析要用的模型 ID（providerId:modelId） */
     async resolveModel(explicit: string): Promise<string> {
         if (explicit) {

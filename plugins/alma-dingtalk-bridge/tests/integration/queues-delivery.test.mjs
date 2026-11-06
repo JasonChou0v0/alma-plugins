@@ -117,7 +117,7 @@ try {
     const {b}=setup({streamingReply:true});let unblock;
     const accepted=[];
     b.dingtalk.replyWebhook=async(_w,t)=>{accepted.push(t);if(accepted.length===1)await new Promise(r=>unblock=r);return {ok:true};};
-    const turn={threadId:'stream',text:'  prefix。tail',startedAt:Date.now(),lastActivity:Date.now(),finished:false,tools:[],announcedTools:[]};
+    const turn={threadId:'stream',senderId:'a',chatId:'c1',conversationType:'2',text:'  prefix。tail',startedAt:Date.now(),lastActivity:Date.now(),finished:false,tools:[],announcedTools:[]};
     const flushing=b.doFlush(turn);await until(()=>accepted.length===1);
     turn.finished=true;const finishing=b.finalizeTurn(turn);await tick();
     check('收尾等待进行中的发送',()=>assert.equal(accepted.length,1));

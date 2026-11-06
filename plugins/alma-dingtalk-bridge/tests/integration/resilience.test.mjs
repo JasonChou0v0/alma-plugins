@@ -11,7 +11,7 @@ function setup(over = {}) {
   const logs = [];
   const log = (...a) => logs.push(a.map(String).join(' '));
   const cfg = { clientId: '', clientSecret: '', robotName: '豆豆', mode: 'per-chat', logRawPayload: false,
-    groupAgentPolicy: 'fullTools', allowedUnionIds: ['u1'], adminUnionIds: [], allowedConversationIds: ['g1'], ...over };
+    groupAgentPolicy: 'fullTools', allowedUnionIds: ['u1'], adminUnionIds: ['u1'], allowedConversationIds: ['g1'], ...over };
   const saved = {};
   const context = { logger: { info: log, warn: log, error: log }, settings: { get: (k, f) => f, update: async () => {} },
     storage: { local: { get: async (k, f) => saved[k] ?? f, set: async (k, v) => { saved[k] = v; } } },

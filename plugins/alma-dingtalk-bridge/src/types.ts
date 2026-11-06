@@ -70,6 +70,8 @@ export interface TurnAttachment {
 }
 
 export interface TurnState {
+    agentEnabled?: boolean;
+    deliveryUncertain?: boolean;
     /** Explicit file parts from assistant messages belonging to this turn. */
     attachments?: TurnAttachment[];
     assistantMessageIds?: Set<string>;
@@ -129,6 +131,8 @@ export interface DingTalkTarget {
 }
 
 export interface SendResult {
+    /** 请求可能已生效，不允许自动重发。 */
+    uncertain?: boolean;
     ok: boolean;
     error?: string;
 }

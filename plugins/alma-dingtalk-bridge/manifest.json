@@ -1,7 +1,7 @@
 {
     "id": "alma-dingtalk-bridge",
     "name": "DingTalk Bridge",
-    "version": "2.3.1",
+    "version": "2.4.0",
     "description": "把钉钉机器人接成 Alma 的聊天渠道：Stream 模式收消息，驱动完整 agent（工具/技能/项目工作区），回复推回钉钉。",
     "author": {
         "name": "JasonChou"
@@ -108,7 +108,7 @@
                         "refuse",
                         "fullTools"
                     ],
-                    "description": "群聊（conversationType=2）里是否驱动带工具的 agent 回合。refuse（默认）：拒绝群 agent 任务并解释，不提交 generate_response——这是唯一的安全选项。fullTools：管理员明确接受风险，群回合并保留全部工具。提示词不是权限边界，不能用来约束工具。该约束对所有发送人一视同仁，管理员也不绕过。注：曾经的 noTools 值已移除——它依赖宿主 tool.willExecute 钩子强制取消工具，而该钩子在内部 WS generate_response 回合是否触发无法从插件侧确认，故不能当作安全选项；旧配置里的 noTools 会被当作 refuse 处理。"
+                    "description": "群聊开关：refuse（默认）拒绝群内生成，仍允许已授权命令；fullTools 开放已授权群的聊天，其中只有 adminUnionIds 内的管理员进入完整 Agent，普通白名单成员走不提供工具的独立文本接口。私聊同样按管理员/普通成员隔离。旧 noTools 按 refuse 处理。"
                 },
                 "dingtalkBridge.allowedUnionIds": {
                     "type": "string",

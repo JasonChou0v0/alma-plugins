@@ -25,7 +25,10 @@ export async function activate(context: PluginContext): Promise<PluginActivation
     const { settings, ui, commands } = context;
 
     /* 插件自有产物统一放到宿主分配的 storagePath。 */
-    const logger = createLogger(context.logger, context.storagePath);
+    const logger = createLogger(context.logger, context.storagePath, () => {
+        try { return Math.min(90, Math.max(1, Math.floor(Number(settings.get('dingtalkBridge.rawPayloadRetentionDays', 7))) || 7)); }
+        catch { return 7; }
+    });
 
     logger.info('DingTalk Bridge 正在激活…');
     logger.info('日志文件:', logger.filePath());
@@ -298,6 +301,7 @@ export async function activate(context: PluginContext): Promise<PluginActivation
 
     const settingsDisposable = settings.onDidChange((e: any) => {
         if (typeof e?.key !== 'string' || !e.key.startsWith('dingtalkBridge.')) return;
+        bridge.reconcilePermissions();
         const reconnectKeys = ['clientId', 'clientSecret', 'clientSecretSecretKey', 'robotCode', 'almaApiPort'];
         if (reconnectKeys.some(k => e.key === `dingtalkBridge.${k}`)) {
             clearTimeout(changeTimer);

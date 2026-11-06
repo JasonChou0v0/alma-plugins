@@ -467,7 +467,9 @@ export class AlmaSocket {
             mentions?: Array<{ name: string }>;
             quoted?: { nick: string; text: string } | null;
         },
+        authorized: () => boolean = () => true,
     ): Promise<void> {
+        if (!authorized()) throw Object.assign(new Error('执行权限已撤销'), { userFacing: true });
         if (!this.isOpen()) {
             await this.connect();
             const deadline = Date.now() + CONNECT_WAIT_MS;
@@ -480,6 +482,7 @@ export class AlmaSocket {
             throw Object.assign(new Error('Alma 未连接，请检查 Alma 是否在运行后重试'), { userFacing: true });
         }
 
+        if (!authorized()) throw Object.assign(new Error('执行权限已撤销'), { userFacing: true });
         if (this.quarantined.has(turn.threadId)) throw new Error('该线程的远端状态不确定，禁止复用');
         if (this.turns.has(turn.threadId)) throw new Error('线程仍有未收尾回合');
         this.turns.set(turn.threadId, turn);
@@ -514,6 +517,16 @@ export class AlmaSocket {
         if (!this.turns.has(threadId)) return false;
         this.ws.send(JSON.stringify({ type: 'stop_generation', data: { threadId } }));
         return true;
+    }
+
+    getTurn(threadId: string): TurnState | undefined { return this.turns.get(threadId); }
+
+    cancelUnauthorized(authorized: (turn: TurnState) => boolean): void {
+        for (const turn of [...this.turns.values()]) {
+            if (authorized(turn)) continue;
+            turn.stopRequested = true;
+            this.failTurn(turn, '权限已撤销，已请求停止生成');
+        }
     }
 
     isRunning(threadId: string): boolean {

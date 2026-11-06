@@ -22,22 +22,25 @@ export function redactSecrets<T>(value: T): T {
 }
 
 /** 删除超过保留天数的归档和日志（按文件名里的日期判断，只动本插件命名的文件）。 */
-export function pruneOld(dir: string, retentionDays: number, now = new Date()): number {
+export function pruneOld(dir: string, retentionDays: number | undefined, now = new Date()): number {
     const today = now.toISOString().slice(0, 10);
-    if (pruned.get(dir) === today) return 0;
-    pruned.set(dir, today);
+    const cacheKey = `${dir}\0${retentionDays ?? "logs-only"}`;
+    if (pruned.get(cacheKey) === today) return 0;
+    let complete = true;
     let removed = 0;
     try {
         for (const name of fs.readdirSync(dir)) {
             const m = name.match(/^(dingtalk-payloads|dingtalk-bridge)-(\d{4}-\d{2}-\d{2})\.(jsonl|log)(\.1)?$/);
             if (!m) continue;
-            const keep = m[1] === 'dingtalk-payloads' ? retentionDays : LOG_RETENTION_DAYS;
+            if (m[1] === 'dingtalk-payloads' && retentionDays === undefined) continue;
+            const keep = m[1] === 'dingtalk-payloads' ? retentionDays! : LOG_RETENTION_DAYS;
             const ageDays = (Date.parse(today) - Date.parse(m[2])) / 86_400_000;
             if (ageDays > keep) {
-                try { fs.unlinkSync(path.join(dir, name)); removed++; } catch { /* 下次再清 */ }
+                try { fs.unlinkSync(path.join(dir, name)); removed++; } catch { complete = false; }
             }
         }
-    } catch { /* 目录不存在等情况不影响主流程 */ }
+        if (complete) pruned.set(cacheKey, today);
+    } catch { /* 下次可重试，不缓存失败 */ }
     return removed;
 }
 

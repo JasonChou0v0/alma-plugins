@@ -258,15 +258,16 @@ export class DingTalkClient {
      * 默认走 markdown，钉钉才会渲染粗体/代码块/列表；
      * 走 text 的话 **bold** 会原样显示成星号。
      */
-    async replyWebhook(webhook: string, text: string, title?: string): Promise<SendResult> {
+    async replyWebhook(webhook: string, text: string, title?: string, authorized: () => boolean = () => true): Promise<SendResult> {
+        if (!authorized()) return { ok: false, error: '发送权限已撤销' };
         if (!webhook) return { ok: false, error: '缺少 sessionWebhook' };
 
         // 排队很久后 webhook 可能已过期：改用机器人主动发送，目标只能是这条消息所属的会话本身。
         const meta = this.webhooks.get(webhook);
         if (meta?.expiresAt && Date.now() > meta.expiresAt - 5_000) {
             this.logger.warn('sessionWebhook 已过期，改用主动发送');
-            if (meta.conversationId) return this.sendToGroup(meta.conversationId, text);
-            if (meta.staffId) return this.sendToUser(meta.staffId, text);
+            if (meta.conversationId) return this.sendToGroup(meta.conversationId, text, authorized);
+            if (meta.staffId) return this.sendToUser(meta.staffId, text, authorized);
             return { ok: false, error: '回复地址已过期且无可用的主动发送目标' };
         }
 
@@ -289,23 +290,16 @@ export class DingTalkClient {
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(payload),
             });
-            const body = await res.text().catch(() => '');
-
-            /* 钉钉即使 HTTP 200 也可能返回 errcode */
-            if (!res.ok) {
-                this.logger.warn('webhook 回复 HTTP 失败', res.status, body.slice(0, 200));
-                return { ok: false, error: `HTTP ${res.status}` };
+            const body: any = await res.json().catch(() => null);
+            if (!res.ok) return { ok: false, error: `webhook HTTP ${res.status}`, uncertain: res.status >= 500 };
+            if (!body || typeof body.errcode !== 'number') {
+                return { ok: false, error: 'webhook 未返回有效业务回执，请核对是否收到', uncertain: true };
             }
-            const errcode = /"errcode"\s*:\s*(\d+)/.exec(body)?.[1];
-            if (errcode && errcode !== '0') {
-                this.logger.warn('webhook 回复 errcode', errcode, body.slice(0, 200));
-                return { ok: false, error: `errcode ${errcode}` };
-            }
+            if (body.errcode !== 0) return { ok: false, error: `webhook errcode ${body.errcode}` };
             return { ok: true };
-        } catch (e) {
-            const error = e instanceof Error ? e.message : String(e);
-            this.logger.warn('webhook 回复异常', error);
-            return { ok: false, error };
+        } catch {
+            this.logger.warn('webhook 回复结果不确定，未自动重试');
+            return { ok: false, error: 'webhook 请求异常，请核对是否收到', uncertain: true };
         }
     }
 
@@ -497,16 +491,30 @@ export class DingTalkClient {
                 return { ok: false, error: '无法为该 UnionID 解析企业内投递地址；跨组织用户请在原会话互动，或检查成员信息读权限' };
             }
             if (!authorized()) return { ok: false, error: '投递前 UnionID 授权已撤销' };
-            return await this.sendToUser(data.result.userid, text);
+            return await this.sendToUser(data.result.userid, text, authorized);
         } catch {
             return { ok: false, error: 'UnionID 投递地址解析或消息发送失败' };
         }
     }
 
+    private static checkSendReceipt(status: number, httpOk: boolean, body: any): { value: SendResult; rejected: boolean } {
+        const rejected = DingTalkClient.isTokenRejected(status, body);
+        const failed = rejected || !httpOk || body?.code || (body?.errcode != null && body.errcode !== 0) ||
+            body?.invalidUserIdList?.length || body?.invalidStaffIdList?.length || body?.flowControlledStaffIdList?.length;
+        if (failed) return { value: { ok: false, error: `钉钉主动发送未成功确认（HTTP ${status}）`,
+            uncertain: !rejected && (status >= 500 || Boolean(httpOk && body?.processQueryKey)) }, rejected };
+        if (typeof body?.processQueryKey !== 'string' || !body.processQueryKey.trim()) {
+            return { value: { ok: false, error: '钉钉主动发送缺少有效回执，请核对是否收到', uncertain: true }, rejected: false };
+        }
+        return { value: { ok: true }, rejected: false };
+    }
+
     /** 主动发单聊消息（仅接收已完成 UnionID 鉴权后的投递地址） */
-    async sendToUser(staffId: string, text: string): Promise<SendResult> {
+    async sendToUser(staffId: string, text: string, authorized: () => boolean = () => true): Promise<SendResult> {
+        if (!authorized()) return { ok: false, error: '发送权限已撤销' };
         const { robotCode } = this.credentials();
         return this.withToken<SendResult>(async (token) => {
+            if (!authorized()) return { value: { ok: false, error: '发送权限已撤销' }, rejected: false };
             try {
                 const res = await fetch(SEND_URL, {
                     method: 'POST',
@@ -522,21 +530,20 @@ export class DingTalkClient {
                         msgParam: JSON.stringify({ content: text }),
                     }),
                 });
-                if (!res.ok) {
-                    const body = await res.text().catch(() => '');
-                    return { value: { ok: false, error: `HTTP ${res.status} ${body.slice(0, 160)}` }, rejected: DingTalkClient.isTokenRejected(res.status) };
-                }
-                return { value: { ok: true }, rejected: false };
+                const body: any = await res.json().catch(() => null);
+                return DingTalkClient.checkSendReceipt(res.status, res.ok, body);
             } catch (e) {
-                return { value: { ok: false, error: e instanceof Error ? e.message : String(e) }, rejected: false };
+                return { value: { ok: false, error: '主动发送结果不确定，请核对是否收到', uncertain: true }, rejected: false };
             }
         }, { ok: false, error: '未配置凭据或 token 获取失败' });
     }
 
     /** 主动发群消息（需要 openConversationId） */
-    async sendToGroup(conversationId: string, text: string): Promise<SendResult> {
+    async sendToGroup(conversationId: string, text: string, authorized: () => boolean = () => true): Promise<SendResult> {
+        if (!authorized()) return { ok: false, error: '发送权限已撤销' };
         const { robotCode } = this.credentials();
         return this.withToken<SendResult>(async (token) => {
+            if (!authorized()) return { value: { ok: false, error: '发送权限已撤销' }, rejected: false };
             try {
                 const res = await fetch(GROUP_SEND_URL, {
                     method: 'POST',
@@ -552,13 +559,10 @@ export class DingTalkClient {
                         msgParam: JSON.stringify({ content: text }),
                     }),
                 });
-                if (!res.ok) {
-                    const body = await res.text().catch(() => '');
-                    return { value: { ok: false, error: `HTTP ${res.status} ${body.slice(0, 160)}` }, rejected: DingTalkClient.isTokenRejected(res.status) };
-                }
-                return { value: { ok: true }, rejected: false };
+                const body: any = await res.json().catch(() => null);
+                return DingTalkClient.checkSendReceipt(res.status, res.ok, body);
             } catch (e) {
-                return { value: { ok: false, error: e instanceof Error ? e.message : String(e) }, rejected: false };
+                return { value: { ok: false, error: '主动发送结果不确定，请核对是否收到', uncertain: true }, rejected: false };
             }
         }, { ok: false, error: '未配置凭据或 token 获取失败' });
     }

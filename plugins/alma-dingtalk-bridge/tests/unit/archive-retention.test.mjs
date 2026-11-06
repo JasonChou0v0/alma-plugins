@@ -38,5 +38,24 @@ try {
     assert(fs.readFileSync(`${file}.1`, 'utf8').includes('first'));
     assert(fs.readFileSync(file, 'utf8').includes('second'));
   });
+  ok('30天归档不会被先写入的普通日志按7天删除', () => {
+    const root = path.join(base, 'custom'); const logs = path.join(root, 'logs'); fs.mkdirSync(logs, { recursive: true });
+    const day = new Date(Date.now() - 10 * 86400000).toISOString().slice(0, 10);
+    const archive = path.join(logs, `dingtalk-payloads-${day}.jsonl`); fs.writeFileSync(archive, 'fixture');
+    createLogger({ info() {}, warn() {}, error() {} }, root).info('first');
+    appendPrivate(logs, { fixture: true }, 30); assert(fs.existsSync(archive));
+  });
+  ok('日志始终使用当前配置，归档关闭后仍按配置清理且同日变更可生效', () => {
+    const root = path.join(base, 'configured'); const logs = path.join(root, 'logs'); fs.mkdirSync(logs, { recursive: true });
+    const day = new Date(Date.now() - 10 * 86400000).toISOString().slice(0, 10);
+    const archive = path.join(logs, `dingtalk-payloads-${day}.jsonl`); fs.writeFileSync(archive, 'fixture');
+    let days = 30; const log = createLogger({ info() {}, warn() {}, error() {} }, root, () => days);
+    log.info('first'); assert(fs.existsSync(archive)); days = 7; log.info('second'); assert(!fs.existsSync(archive));
+  });
+  ok('目录暂不存在时不缓存失败，当日恢复后仍清理', () => {
+    const logs = path.join(base, 'later'); pruneOld(logs, 7); fs.mkdirSync(logs);
+    const archive = path.join(logs, 'dingtalk-payloads-2020-01-01.jsonl'); fs.writeFileSync(archive, 'fixture');
+    assert.equal(pruneOld(logs, 7), 1); assert(!fs.existsSync(archive));
+  });
 } finally { fs.rmSync(base, { recursive: true, force: true }); try { fs.rmdirSync(parent); } catch {} }
 console.log(`结果: ${n} 通过, 0 失败`);

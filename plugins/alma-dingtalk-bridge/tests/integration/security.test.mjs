@@ -41,7 +41,8 @@ globalThis.fetch = async (url, init) => {
         });
     }
     if (u.includes('/topapi/user/getbyunionid')) return Response.json({ errcode: 0, result: { userid: 'delivery-user' } });
-    /* 钉钉发送 / webhook 回复：统一回成功 */
+    if (u.includes('/robot/')) return Response.json({ processQueryKey: 'fixture-receipt' });
+    /* webhook 回复使用业务成功码 */
     return new Response('{"errcode":0,"errmsg":"ok"}', { status: 200 });
 };
 
@@ -179,7 +180,7 @@ try {
         const stale = {
             threadId: 'thread-stale',
             chatId: 'c', webhook: 'http://127.0.0.1/wh/stale',
-            senderId: 'staff_a', text: '部分回复',
+            senderId: 'staff_a', conversationType: '1', text: '部分回复',
             tools: [], announcedTools: [],
             startedAt: Date.now() - 30 * 60_000,
             lastActivity: Date.now() - 30 * 60_000,
@@ -188,7 +189,7 @@ try {
         const fresh = {
             threadId: 'thread-fresh',
             chatId: 'c', webhook: 'http://127.0.0.1/wh/fresh',
-            senderId: 'staff_a', text: '',
+            senderId: 'staff_a', conversationType: '1', text: '',
             tools: [], announcedTools: [],
             startedAt: Date.now(), lastActivity: Date.now(),
             finished: false,
@@ -231,7 +232,7 @@ try {
 
         const turn = {
             threadId: 't-flush', chatId: 'c', webhook: 'http://127.0.0.1/wh',
-            senderId: 'staff_a', text: 'a'.repeat(250),
+            senderId: 'staff_a', conversationType: '1', text: 'a'.repeat(250),
             tools: [], announcedTools: [],
             startedAt: Date.now(), lastActivity: Date.now(),
             finished: false, flushCount: 0, flushedChars: 0,
