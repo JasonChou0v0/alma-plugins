@@ -519,6 +519,15 @@ export class AlmaSocket {
         return true;
     }
 
+    /** 主动取消后隔离旧回合并抑制迟到输出。 */
+    cancel(threadId: string): boolean {
+        const turn = this.turns.get(threadId);
+        if (!turn) return false;
+        turn.stopRequested = true;
+        this.failTurn(turn, '用户已请求停止生成');
+        return true;
+    }
+
     getTurn(threadId: string): TurnState | undefined { return this.turns.get(threadId); }
 
     cancelUnauthorized(authorized: (turn: TurnState) => boolean): void {

@@ -20,7 +20,7 @@ export interface BridgeConfig {
     allowedConversationIds: string[];
     /**
      * 管理员 UnionID：仅这些显式 UnionID 能执行管理命令。
-     * 空则无人可用这两个命令；不把 allowedUnionIds 隐式当作管理员。
+     * 空则无人可管理 Agent 或工作区；普通成员仍可重置自己的纯聊天。
      * 仍受 allowedUnionIds 与 allowedConversationIds 约束（入站鉴权里已完成）。
      */
     adminUnionIds: string[];
@@ -70,6 +70,7 @@ export interface TurnAttachment {
 }
 
 export interface TurnState {
+    contextEpoch?: number;
     agentEnabled?: boolean;
     deliveryUncertain?: boolean;
     /** Explicit file parts from assistant messages belonging to this turn. */

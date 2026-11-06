@@ -230,7 +230,7 @@
     {
       "id": "alma-dingtalk-bridge",
       "name": "DingTalk Bridge",
-      "version": "2.4.0",
+      "version": "2.4.1",
       "description": "Bridge DingTalk bots into Alma as a chat channel: Stream-mode intake drives a full agent turn (tools, skills, project workspace) and posts replies back to DingTalk.",
       "author": {
         "name": "JasonChou",

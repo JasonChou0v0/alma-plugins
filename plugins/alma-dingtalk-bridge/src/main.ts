@@ -195,9 +195,13 @@ export async function activate(context: PluginContext): Promise<PluginActivation
         }),
 
         commands.register('dingtalkBridge.clearSessions', async () => {
-            bridge.clearSessions();
+            try {
+                await bridge.clearSessions();
+                ui.showNotification('已清空会话映射和纯聊天历史，并请求停止在途回合', { type: 'info' });
+            } catch {
+                ui.showNotification('内存会话已清空，但映射保存失败，请检查日志后重试', { type: 'warning' });
+            }
             refreshStatusBar();
-            ui.showNotification('已清空会话映射，下次消息会新建会话', { type: 'info' });
         }),
 
         commands.register('dingtalkBridge.testAlma', async () => {

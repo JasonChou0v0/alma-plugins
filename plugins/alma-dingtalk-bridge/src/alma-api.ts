@@ -40,8 +40,8 @@ export class AlmaApi {
         return (text ? JSON.parse(text) : undefined) as T;
     }
 
-    getSettings(): Promise<Record<string, any>> {
-        return this.req('/api/settings');
+    getSettings(signal?: AbortSignal): Promise<Record<string, any>> {
+        return this.req('/api/settings', { signal });
     }
 
     getThreads(): Promise<AlmaThread[]> {
@@ -89,14 +89,14 @@ export class AlmaApi {
     }
 
     /** 解析要用的模型 ID（providerId:modelId） */
-    async resolveModel(explicit: string): Promise<string> {
+    async resolveModel(explicit: string, signal?: AbortSignal): Promise<string> {
         if (explicit) {
             if (!explicit.includes(':')) {
                 throw new Error(`模型格式应为 providerId:modelId，当前是 "${explicit}"`);
             }
             return explicit;
         }
-        const settings = await this.getSettings();
+        const settings = await this.getSettings(signal);
         const fallback = settings?.chat?.defaultModel;
         if (!fallback) {
             throw new Error('Alma 未配置默认模型，请在插件设置里填写 defaultModel');

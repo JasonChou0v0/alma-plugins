@@ -96,7 +96,7 @@ try {
     await until(()=>sent.length===1);const old=sent[0].data.threadId;
     b.socket.ws=null;
     b.socket.failAllTurns('test disconnect');await p;
-    check('断线通知并移除旧会话映射',()=>{assert(replies.some(r=>r.text.includes('test disconnect')));assert(!Object.values(b.getSessions()).some(s=>s.threadId===old));assert(b.socket.pendingStops.has(old));});
+    check('断线通知并移除旧会话映射',()=>{assert(replies.some(r=>r.text.includes('生成失败')));assert(!replies.some(r=>r.text.includes('test disconnect')));assert(!Object.values(b.getSessions()).some(s=>s.threadId===old));assert(b.socket.pendingStops.has(old));});
     b.socket.ws={readyState:1,send:r=>sent.push(JSON.parse(r)),close(){}};
     const p2=b.handleIncoming(msg('after disconnect'));
     await until(()=>sent.length===2);
@@ -110,7 +110,7 @@ try {
     const p=b.handleIncoming(msg('timeout'));await until(()=>sent.length===1);
     const t=b.socket.turns.get(sent[0].data.threadId);t.lastActivity=0;
     b.sweepStaleTurns();await p;
-    check('超时实际发stop、通知并隔离旧线程',()=>{assert(sent.some(x=>x.type==='stop_generation'));assert(b.socket.quarantined.has(t.threadId));assert(replies.some(r=>r.text.includes('已请求停止')));assert.equal(b.socket.turns.size,0);});
+    check('超时实际发stop、通知并隔离旧线程',()=>{assert(sent.some(x=>x.type==='stop_generation'));assert(b.socket.quarantined.has(t.threadId));assert(replies.some(r=>r.text.includes('生成失败')));assert.equal(b.socket.turns.size,0);});
     b.socket.close();
   }
   {

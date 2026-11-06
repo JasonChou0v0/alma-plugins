@@ -198,10 +198,11 @@ try {
             JSON.stringify(b2.workspaceOverrides),
         );
 
-        /* C3：adminUnionIds 为空 → 无人能 /new */
+        /* C3：adminUnionIds 为空 → /new 只重置纯聊天，不能创建 Agent */
         const { bridge: b3, replies: r3 } = makeBridge({ adminUnionIds: [] });
         await b3.handleIncoming(downstream('/new 标题', { senderUnionId: 'staff_a', conversationType: '1' }));
-        check('空 adminUnionIds 时 /new 被拒', r3.some((t) => /仅限管理员/.test(t)), JSON.stringify(r3));
+        check('空 adminUnionIds 时 /new 仅重置纯聊天', r3.some((t) => /已重置当前纯聊天/.test(t)), JSON.stringify(r3));
+        check('普通成员 /new 不创建 Agent 映射', Object.keys(b3.getSessions()).length === 0);
 
         /* C4：管理员 /new → 进入（建会话） */
         const { bridge: b4, replies: r4 } = makeBridge({ adminUnionIds: ['staff_a'] });

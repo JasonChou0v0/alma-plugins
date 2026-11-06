@@ -1,7 +1,7 @@
 {
     "id": "alma-dingtalk-bridge",
     "name": "DingTalk Bridge",
-    "version": "2.4.0",
+    "version": "2.4.1",
     "description": "把钉钉机器人接成 Alma 的聊天渠道：Stream 模式收消息，驱动完整 agent（工具/技能/项目工作区），回复推回钉钉。",
     "author": {
         "name": "JasonChou"
@@ -123,7 +123,7 @@
                 "dingtalkBridge.adminUnionIds": {
                     "type": "string",
                     "default": "",
-                    "description": "管理员 UnionID（逗号分隔）。控制 /use、/new、/allow、/deny、/access；留空则无人可用。管理员仍需在用户白名单中，只有 /allow group 可在未授权群执行。"
+                    "description": "管理员 UnionID（逗号分隔）。控制工作区切换、Agent 新建/停止及授权管理；普通成员的 /new 仅重置纯聊天，/stop 仅停止本人纯聊天。管理员仍须在用户白名单，只有 /allow group 可作为未授权群的授权入口。"
                 },
                 "dingtalkBridge.streamingReply": {
                     "type": "boolean",
